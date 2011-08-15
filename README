@@ -1,0 +1,27 @@
+pyTree : a collection of python codes for tree-based neighbor search
+
+author : Jake Vanderplas <vanderplas@astro.washington.edu>
+
+This is mainly a test-bed for codes to be included in scikit-learn.
+As such, it's not set up to be a fully-fledged package, but to be installed
+in-place.  Compile with
+  python setup.py build_ext --inplace
+
+Contents:
+
+cpp_balltree :
+    This is the C++ BallTree code which I submitted to scikit-learn.  The
+    cython wrapper and a few tweaks to the C++ source are due to some of
+    the scikit-learn contributers
+
+npy_balltree :
+    This is an attempt to speed-up and streamline the ball tree implementation
+    Its approach is to use no dynamic memory allocation, but instead store
+    all the info for the built ball tree in a collection of numpy arrays.
+    I'm also making the ball tree more flexible (any minkowski p-distance
+    can be used).
+    This is a work in progress. Currently initializing the tree is
+    approximately 8-10 times faster than in the C++ version.  The
+    query() function is still quite a bit slower, but there are some
+    speed improvements that will make it competetive.  The query_radius()
+    function has not yet been implemented.
