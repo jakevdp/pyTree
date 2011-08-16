@@ -3,3 +3,5 @@
 build
 *.c
 *.cpp
+Profile.prof
+test/*

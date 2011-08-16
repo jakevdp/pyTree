@@ -15,6 +15,11 @@ D = 5
 k = 10
 leaf_size = 20
 
+#N = 5
+#D = 2
+#k = 3
+#leaf_size = 1
+
 X = np.random.random((N,D))
 
 #import pylab
@@ -53,11 +58,14 @@ print ' indices:  ', np.allclose(dist, sk_dist)
 print ' distances:', np.allclose(ind, sk_ind)
 
 i_diff = np.unique(np.where(abs(dist - sk_dist) > 1E-10)[0])
-for i in i_diff:
-    print i, ind[i], sk_ind[i]
-    print '  ', dist[i], sk_dist[i]
 
-try:
-    pylab.show()
-except:
-    pass
+if i_diff > 0:
+    print 70*'!'
+    print '    ', i_diff, 'differences detected!!'
+    print '     note: random seed =', rseed
+#for i in i_diff:
+#    print i, ind[i], sk_ind[i]
+#    print '  ', dist[i], sk_dist[i]
+
+
+#pylab.show()

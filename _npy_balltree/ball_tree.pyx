@@ -161,13 +161,14 @@ ctypedef np.int32_t BOOL_t
 
 cdef DTYPE_t infinity = np.inf
 
+@cython.profile(False)
 cdef inline DTYPE_t dmax(DTYPE_t x, DTYPE_t y):
     if x >= y:
         return x
     else:
         return y
 
-
+@cython.profile(False)
 cdef inline DTYPE_t dmin(DTYPE_t x, DTYPE_t y):
     if x <= y:
         return x
@@ -313,6 +314,8 @@ cdef class BallTree:
         # almost-flatten x for iteration
         orig_shape = X.shape
         X = X.reshape((-1, X.shape[-1]))
+
+        X = np.asarray(X, dtype=DTYPE, order='C')
 
         cdef ITYPE_t i
         cdef ITYPE_t N
@@ -484,7 +487,7 @@ cdef void Node_build(ITYPE_t leaf_size, ITYPE_t p,
                                   n_features,
                                   n_points)
 
-
+@cython.profile(False)
 cdef inline void copy_array(DTYPE_t* x, DTYPE_t* y, ITYPE_t n):
     # copy array y into array x
     cdef ITYPE_t i
@@ -539,10 +542,12 @@ cdef ITYPE_t find_split_dim(DTYPE_t* data,
     return j_max
 
 
+@cython.profile(False)
 cdef inline void swap(ITYPE_t* arr, ITYPE_t i1, ITYPE_t i2):
     cdef ITYPE_t tmp = arr[i1]
     arr[i1] = arr[i2]
     arr[i2] = tmp
+
 
 cdef void partition_indices(DTYPE_t* data,
                             ITYPE_t* node_indices,
@@ -574,10 +579,11 @@ cdef void partition_indices(DTYPE_t* data,
 
 ######################################################################
 
-cdef DTYPE_t calc_dist_LB(DTYPE_t* pt,
-                          DTYPE_t* centroid,
-                          ITYPE_t n_features,
-                          DTYPE_t p):
+@cython.profile(False)
+cdef inline DTYPE_t calc_dist_LB(DTYPE_t* pt,
+                                 DTYPE_t* centroid,
+                                 ITYPE_t n_features,
+                                 DTYPE_t p):
     return dmax(0, (dist(pt, centroid, n_features, p)
                     - centroid[n_features]))
 
@@ -620,23 +626,25 @@ cdef void Node_query(DTYPE_t* pt,
 
         #------------------------------------------------------------
         # Case 1: query point is outside node radius
-        if dist_LB >= max_heap_largest(near_set_dist):
+        #if dist_LB >= max_heap_largest(near_set_dist):
+        #    continue
+        if dist_LB >= pqueue_largest(near_set_dist, k):
             continue
 
         #------------------------------------------------------------
         # Case 2: this is a leaf node.  Update set of nearby points
         elif node_info[2]:
             for i from idx_start <= i < idx_end:
-                if n_points == 1:
-                    dist_pt = dist_LB
-                else:
-                    dist_pt = dist(pt,
-                                   data + n_features * idx_array[i],
-                                   n_features, p)
+                dist_pt = dist(pt,
+                               data + n_features * idx_array[i],
+                               n_features, p)
 
-                if dist_pt < max_heap_largest(near_set_dist):
-                    insert_max_heap(dist_pt, idx_array[i],
-                                    near_set_dist, near_set_indx, k)
+                #if dist_pt < max_heap_largest(near_set_dist):
+                #    max_heap_insert(dist_pt, idx_array[i],
+                #                    near_set_dist, near_set_indx, k)
+                if dist_pt < pqueue_largest(near_set_dist, k):
+                    pqueue_insert(dist_pt, idx_array[i],
+                                  near_set_dist, near_set_indx, k)
 
         #------------------------------------------------------------
         # Case 3: Node is not a leaf.  Recursively query subnodes
@@ -682,19 +690,26 @@ cdef struct stack_item:
     DTYPE_t dist_LB
     ITYPE_t i_node
 
+
 cdef struct stack:
     int n
     stack_item* heap
     int size
 
+
+@cython.profile(False)
 cdef inline void stack_create(stack* self, int size):
     self.size = size
     self.heap = <stack_item*> stdlib.malloc(sizeof(stack_item) * size)
     self.n = 0
 
+
+@cython.profile(False)
 cdef inline void stack_destroy(stack* self):
     stdlib.free(self.heap)
 
+
+@cython.profile(False)
 cdef inline void stack_resize(stack* self, int new_size):
     if new_size < self.n:
         raise ValueError("new_size smaller than current")
@@ -702,6 +717,7 @@ cdef inline void stack_resize(stack* self, int new_size):
     self.heap = <stack_item*>stdlib.realloc(<void*> self.heap,
                                             new_size * sizeof(stack_item))
 
+@cython.profile(False)
 cdef inline void stack_push(stack* self, stack_item item):
     if self.n >= self.size:
         stack_resize(self, 2 * self.size + 1)
@@ -709,6 +725,7 @@ cdef inline void stack_push(stack* self, stack_item item):
     self.heap[self.n] = item
     self.n += 1
 
+@cython.profile(False)
 cdef inline stack_item stack_pop(stack* self):
     if self.n == 0:
         raise ValueError("popping empty stack")
@@ -731,18 +748,19 @@ cdef inline stack_item stack_pop(stack* self):
 #
 # An empty heap should be full of infinities
 #
+@cython.profile(False)
 cdef inline DTYPE_t max_heap_largest(DTYPE_t* heap):
     return heap[0]
 
-cdef void insert_max_heap(DTYPE_t val, ITYPE_t i_val,
+
+cdef void max_heap_insert(DTYPE_t val, ITYPE_t i_val,
                           DTYPE_t* heap,
                           ITYPE_t* idx_array,
                           ITYPE_t heap_size):
-    # note that an empty heap is full of infinities
-    # check whether we need val in the heap
     cdef ITYPE_t i, ic1, ic2, i_tmp
     cdef DTYPE_t d_tmp
 
+    # check if val should be in heap
     if val > heap[0]:
         return
     
@@ -753,32 +771,76 @@ cdef void insert_max_heap(DTYPE_t val, ITYPE_t i_val,
     i = 0
     while 1:
         ic1 = 2 * i + 1
-        ic2 = 2 * i + 2
+        ic2 = ic1 + 1
 
         if ic1 >= heap_size:
             break
         elif ic2 >= heap_size:
-            if heap[ic1] > heap[i]:
+            if heap[ic1] > val:
                 i_swap = ic1
             else:
                 break
         elif heap[ic1] >= heap[ic2]:
-            if heap[i] < heap[ic1]:
+            if val < heap[ic1]:
                 i_swap = ic1
             else:
                 break
         else:
-            if heap[i] < heap[ic2]:
+            if val < heap[ic2]:
                 i_swap = ic2
             else:
                 break
 
-        d_tmp = heap[i]
         heap[i] = heap[i_swap]
-        heap[i_swap] = d_tmp
-        
-        i_tmp = idx_array[i]
         idx_array[i] = idx_array[i_swap]
-        idx_array[i_swap] = i_tmp
     
         i = i_swap
+    
+    heap[i] = val
+    idx_array[i] = i_val
+
+#------------------------------------------------------------
+# alternative: priority queue
+
+@cython.profile(False)
+cdef inline DTYPE_t pqueue_largest(DTYPE_t* queue, ITYPE_t queue_size):
+    return queue[queue_size - 1]
+
+cdef inline void pqueue_insert(DTYPE_t val, ITYPE_t i_val,
+                               DTYPE_t* queue, ITYPE_t* idx_array,
+                               ITYPE_t queue_size):
+    cdef ITYPE_t i_lower = 0
+    cdef ITYPE_t i_upper = queue_size - 1
+    cdef ITYPE_t i_mid
+    cdef int i #unsigned leads to problems in the for-loop
+    
+    if val >= queue[i_upper]:
+        return
+    elif val <= queue[i_lower]:
+        i_mid = i_lower
+    else:
+        while True:
+            if (i_upper - i_lower) < 2:
+                i_mid = i_lower + 1
+                break
+            else:
+                i_mid = (i_lower + i_upper) / 2
+
+            if i_mid == i_lower:
+                i_mid += 1
+                break
+
+            if val >= queue[i_mid]:
+                i_lower = i_mid
+            else:
+                i_upper = i_mid
+
+    for i from queue_size - 1 > i >= i_mid:
+        if i > queue_size:
+            break
+        queue[i + 1] = queue[i]
+        idx_array[i + 1] = idx_array[i]
+
+    queue[i_mid] = val
+    idx_array[i_mid] = i_val
+            
