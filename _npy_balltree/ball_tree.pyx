@@ -370,10 +370,18 @@ cdef class BallTree:
 
         distances[:] = np.inf
 
-        for i from 0 <= i < X.shape[0]:
-            Node_query(X[i], self.p, k, distances[i], idx_array[i],
+        cdef DTYPE_t* dist_ptr = <DTYPE_t*> distances.data
+        cdef ITYPE_t* idx_ptr = <ITYPE_t*> idx_array.data
+        cdef ITYPE_t n_samples = X.shape[0]
+        cdef ITYPE_t n_neighbors = k
+
+        for i from 0 <= i < n_samples:
+            Node_query(X[i], self.p, k, 
+                       dist_ptr, idx_ptr,
                        self.data, self.idx_array,
                        self.node_float_arr, self.node_int_arr)
+            dist_ptr += n_neighbors
+            idx_ptr += n_neighbors
             
         # deflatten results
         if return_distance:
@@ -641,68 +649,11 @@ cdef DTYPE_t calc_dist_LB(ITYPE_t i_node,
                     - node_float_arr[i_node, n]))
 
 
-#@cython.boundscheck(False)
-cdef void Node_query_old(ITYPE_t i_node,
-                         np.ndarray[DTYPE_t, ndim=1, mode='c'] pt,
-                         ITYPE_t p, ITYPE_t k,
-                         np.ndarray[DTYPE_t, ndim=1] near_set_dist,
-                         np.ndarray[ITYPE_t, ndim=1] near_set_indx,
-                         np.ndarray[DTYPE_t, ndim=2, mode='c'] data,
-                         np.ndarray[ITYPE_t, ndim=1, mode='c'] idx_array,
-                         np.ndarray[DTYPE_t, ndim=2, mode='c'] node_float_arr,
-                         np.ndarray[ITYPE_t, ndim=2, mode='c'] node_int_arr,
-                         DTYPE_t dist_LB = -1):
-    cdef DTYPE_t dist_pt, dist_LB_1, dist_LB_2
-    cdef ITYPE_t i, i_pos
-    cdef ITYPE_t idx_start = node_int_arr[i_node, 0]
-    cdef ITYPE_t idx_end = node_int_arr[i_node, 1]
-    cdef ITYPE_t n_points = idx_end - idx_start
-    cdef ITYPE_t n_features = data.shape[1]
-    
-    if dist_LB < 0:
-        dist_LB = calc_dist_LB(i_node, pt, node_float_arr, p)
-
-    #------------------------------------------------------------
-    # Case 1: query point is outside node radius
-    if dist_LB >= max_heap_largest(near_set_dist):
-        return
-
-    #------------------------------------------------------------
-    # Case 2: this is a leaf node.  Update set of nearby points
-    elif node_int_arr[i_node, 2]:
-        for i from idx_start <= i < idx_end:
-            if n_points == 1:
-                dist_pt = dist_LB
-            else:
-                dist_pt = dist(pt, data[idx_array[i]], p)
-
-            if dist_pt < max_heap_largest(near_set_dist):
-                insert_max_heap(dist_pt, idx_array[i],
-                                near_set_dist, near_set_indx, k)
-
-    #------------------------------------------------------------
-    # Case 3: Node is not a leaf.  Recursively query subnodes
-    else:
-        dist_LB_1 = calc_dist_LB(2 * i_node + 1,
-                                 pt, node_float_arr, p)
-        dist_LB_2 = calc_dist_LB(2 * i_node + 2,
-                                 pt, node_float_arr, p)
-        if dist_LB_1 <= dist_LB_2:
-            Node_query_old(2 * i_node + 1, pt, p, k, near_set_dist, near_set_indx,
-                       data, idx_array, node_float_arr, node_int_arr, dist_LB_1)
-            Node_query_old(2 * i_node + 2, pt, p, k, near_set_dist, near_set_indx,
-                       data, idx_array, node_float_arr, node_int_arr, dist_LB_2)
-        else:
-            Node_query_old(2 * i_node + 2, pt, p, k, near_set_dist, near_set_indx,
-                       data, idx_array, node_float_arr, node_int_arr, dist_LB_2)
-            Node_query_old(2 * i_node + 1, pt, p, k, near_set_dist, near_set_indx,
-                       data, idx_array, node_float_arr, node_int_arr, dist_LB_1)
-
 
 cdef void Node_query(np.ndarray[DTYPE_t, ndim=1, mode='c'] pt,
                      ITYPE_t p, ITYPE_t k,
-                     np.ndarray[DTYPE_t, ndim=1] near_set_dist,
-                     np.ndarray[ITYPE_t, ndim=1] near_set_indx,
+                     DTYPE_t* near_set_dist,
+                     ITYPE_t* near_set_indx,
                      np.ndarray[DTYPE_t, ndim=2, mode='c'] data,
                      np.ndarray[ITYPE_t, ndim=1, mode='c'] idx_array,
                      np.ndarray[DTYPE_t, ndim=2, mode='c'] node_float_arr,
@@ -750,13 +701,15 @@ cdef void Node_query(np.ndarray[DTYPE_t, ndim=1, mode='c'] pt,
 
         #------------------------------------------------------------
         # Case 3: Node is not a leaf.  Recursively query subnodes
+        #         starting with the one whose centroid is closest
         else:
             i1 = 2 * i_node + 1
             i2 = i1 + 1
             dist_LB_1 = calc_dist_LB(i1, pt, node_float_arr, p)
             dist_LB_2 = calc_dist_LB(i2, pt, node_float_arr, p)
 
-            if dist_LB_1 >= dist_LB_2:
+            # append children to stack: last-in-first-out
+            if dist_LB_2 <= dist_LB_1:
                 item.i_node = i1
                 item.dist_LB = dist_LB_1
                 stack_push(&node_stack, item)
@@ -834,13 +787,12 @@ cdef inline stack_item stack_pop(stack* self):
 #
 # An empty heap should be full of infinities
 #
-cdef inline DTYPE_t max_heap_largest(
-    np.ndarray[DTYPE_t, ndim=1, mode='c'] heap):
+cdef inline DTYPE_t max_heap_largest(DTYPE_t* heap):
     return heap[0]
 
 cdef void insert_max_heap(DTYPE_t val, ITYPE_t i_val,
-                          np.ndarray[DTYPE_t, ndim=1, mode='c'] heap,
-                          np.ndarray[ITYPE_t, ndim=1, mode='c'] idx_array,
+                          DTYPE_t* heap,
+                          ITYPE_t* idx_array,
                           ITYPE_t heap_size):
     # note that an empty heap is full of infinities
     # check whether we need val in the heap
