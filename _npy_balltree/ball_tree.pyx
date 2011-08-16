@@ -1,5 +1,146 @@
 # cython: profile=True
 
+"""
+Ball Tree
+=========
+
+
+Implementation Notes
+--------------------
+
+A ball tree is a data object which speeds up nearest neighbor
+searches in high dimensions (see scikit-learn neighbors module
+documentation for an overview of neighbor trees). There are many 
+types of ball trees.  This package provides a basic implementation 
+in cython.  
+
+A ball tree can be thought of as a collection of nodes.  Each node
+stores a centroid, a radius, and the pointers to two child nodes.
+
+* centroid : the centroid of a node is the mean of all the locations 
+    of points within the node
+* radius : the radius of a node is the distance from the centroid
+    to the furthest point in the node.
+* subnodes : each node has a maximum of 2 child nodes.  The data within
+    the parent node is divided between the two child nodes.
+
+In a typical tree implementation, nodes may be classes or structures which
+are dynamically allocated as needed.  This offers flexibility in the number
+of nodes, and leads to very straightforward and readable code.  It also means
+that the tree can be dynamically augmented or pruned with new data, in an
+in-line fashion.  This approach generally leads to recursive code: upon
+construction, the head node constructs its child nodes, the child nodes
+construct their child nodes, and so-on.
+
+The current package uses a different approach: all node data is stored in
+a set of numpy arrays which are pre-allocated.  The main advantage of this
+approach is that the whole object can be quickly and easily saved to disk
+and reconstructed from disk.  This also allows for an iterative interface
+which gives more control over the heap, and leads to speed.  There are a
+few disadvantages, however: once the tree is built, augmenting or pruning it
+is not as straightforward.  Also, the size of the tree must be known from the
+start, so there is not as much flexibility in building it.
+
+Because understanding a ball tree is simpler with recursive code, here is some
+pseudo-code to show the structure of the main functionality
+
+    # Ball Tree pseudo code
+
+    class Node:
+        #class data:
+        centroid
+        radius
+        child1, child2
+
+        #class methods:
+        def construct(data):
+            centroid = compute_centroid(data)
+            radius = compute_radius(centroid, data)
+
+            # Divide the data into two approximately equal sets.
+            # This is often done by splitting along a single dimension.  
+            data1, data2 = divide(data)
+            
+            if number_of_points(data1) > 0:
+                child1.construct(data1)
+
+            if number_of_points(data2) > 0:
+                child2.construct(data2)
+
+        def query(pt, neighbors_heap):
+            # compute the minimum distance from pt to any point in this node
+            d = distance(point, centroid)
+            if d < radius:
+                min_distance = 0
+            else:
+                min_distance = d - radius
+            
+            if min_distance > max_distance_in(neighbors_heap):
+                # all these points are too far away.  cut off the search here
+                return
+            elif node_size > 1:
+                child1.query(pt, neighbors_heap)
+                child2.query(pt, neighbors_heap)
+
+
+    object BallTree:
+        #class data:
+        data
+        root_node
+        def construct(data, num_leaves):
+            root_node.construct(data)
+
+        def query(point, num_neighbors):
+            neighbors_heap = empty_heap_of_size(num_neighbors)
+            root_node.query(point, neighbors_heap)
+                
+This certainly is not a complete description, but should give the basic idea
+of the form of the algorithm.  The implementation below is much faster than
+anything mimicking the pseudo-code above, but for that reason is much more 
+opaque.  Here's the basic idea.
+
+Given input data of size `(n_samples, n_features)`, BallTree computes the
+expected number of nodes `n_nodes`, an allocates the following arrays:
+
+* `data` : a float array of shape `(n_samples, n_features)
+    This is simply the input data.  If the input matrix is well-formed
+    (contiguous, c-ordered, correct data type) then no copy is needed
+* `idx_array` : an integer array of size `n_samples`
+    This can be thought of as an array of pointers to the data in `data`.
+    Rather than shuffling around the data itself, we shuffle around pointers
+    to the rows in data.
+* `node_float_arr` : a float array of shape (n_nodes, n_features + 1)
+    This stores the floating-point information associated with each node.
+    For a node of index `i_node`, the node centroid is stored at
+    `node_float_arr[i_node, :n_features]` and the node radius is stored at
+    `node_float_arr[n_features]`.
+* `node_int_arr` : an integer array of shape (n_nodes, 3)
+    This stores the integer information associated with each node.  For
+    a node of index `i_node`, the following variables are stored:
+    - `idx_start = node_int_arr[i_node, 0]`
+    - `idx_end = node_int_arr[i_node, 1]`
+    - `is_leaf = node_int_arr[i_node, 2]`
+    `idx_start` and `idx_end` point to locations in `idx_array` that reference
+    the data in this node.  That is, the points within the current node are
+    given by `data[idx_array[idx_start:idx_end]]`.
+    `is_leaf` is a boolean value which tells whether this node is a leaf: that
+    is, whether or not it has children.
+
+You may notice that there are no pointers from parent nodes to child nodes and
+vice-versa.  This is implemented implicitly:  For a node with index `i`, the
+two children are found at indices `2 * i + 1` and `2 * i + 2`, while the
+parent is found at index `floor((i - 1) / 2)`.  The root node, of course,
+has no parent.
+
+With this data structure in place, we can implement the functionality of the
+BallTree pseudo-code spelled-out above, throwing in a few clever tricks to
+make it efficient. Most of the data passing done in this code uses raw data 
+pointers.  Using numpy arrays would be preferable for safety, but the 
+overhead of array slicing and sub-array construction leads to execution 
+time which is several orders of magnitude slower than the current 
+implementation.
+"""
+
 import numpy as np
 cimport numpy as np
 
@@ -32,8 +173,7 @@ cdef inline DTYPE_t dmin(DTYPE_t x, DTYPE_t y):
 
 cdef DTYPE_t infinity = np.inf
 
-#distance function
-#@cython.boundscheck(False)
+
 cdef DTYPE_t dist(np.ndarray[DTYPE_t, ndim=1, mode='c'] x1,
                   np.ndarray[DTYPE_t, ndim=1, mode='c'] x2,
                   DTYPE_t p):
@@ -58,6 +198,7 @@ cdef DTYPE_t dist(np.ndarray[DTYPE_t, ndim=1, mode='c'] x1,
             r += d ** p
         r = r ** (1. / p)
     return r
+
 
 cdef DTYPE_t dist_p_ptr(DTYPE_t *x1, DTYPE_t *x2, ITYPE_t n, DTYPE_t p):
     cdef ITYPE_t i
@@ -188,6 +329,8 @@ cdef class BallTree:
     def __init__(self, X, leaf_size=20, p=2):
         self.data = np.asarray(X, dtype=DTYPE)
         assert self.data.ndim == 2
+
+        assert p >= 1
         
         cdef ITYPE_t n_samples = self.data.shape[0]
         cdef ITYPE_t n_features = self.data.shape[1]
@@ -532,8 +675,9 @@ cdef void Node_query(ITYPE_t i_node,
             else:
                 dist_pt = dist(pt, data[idx_array[i]], p)
 
-            insert_max_heap(dist_pt, idx_array[i],
-                                near_set_dist, near_set_indx)
+            if dist_pt < max_heap_largest(near_set_dist):
+                insert_max_heap(dist_pt, idx_array[i],
+                                near_set_dist, near_set_indx, k)
 
     #------------------------------------------------------------
     # Case 3: Node is not a leaf.  Recursively query subnodes
@@ -573,13 +717,12 @@ cdef inline DTYPE_t max_heap_largest(
 
 cdef void insert_max_heap(DTYPE_t val, ITYPE_t i_val,
                           np.ndarray[DTYPE_t, ndim=1, mode='c'] heap,
-                          np.ndarray[ITYPE_t, ndim=1, mode='c'] idx_array):
+                          np.ndarray[ITYPE_t, ndim=1, mode='c'] idx_array,
+                          ITYPE_t heap_size):
     # note that an empty heap is full of infinities
     # check whether we need val in the heap
     cdef ITYPE_t i, ic1, ic2, i_tmp
     cdef DTYPE_t d_tmp
-
-    cdef ITYPE_t heap_size = heap.size
 
     if val > heap[0]:
         return

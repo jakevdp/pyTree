@@ -12,7 +12,7 @@ np.random.seed(rseed)
 
 N = 1000
 D = 5
-k = 5
+k = 10
 leaf_size = 20
 
 X = np.random.random((N,D))
