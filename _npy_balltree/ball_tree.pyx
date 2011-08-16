@@ -349,28 +349,6 @@ cdef class BallTree:
             return idx_array.reshape((orig_shape[:-1]) + (k,))
         
 
-######################################################################
-# Node_build
-#  This function builds the ball tree.
-#  Four data buffers should be passed to the function:
-#
-#    data: size = n_samples * n_features
-#         this array holds the input data
-#
-#    idx_array: size = n_samples
-#        on input, this should be [0, 1, 2, ... n_samples - 1]
-#        on output, the indices will be re-ordered so that the indices
-#                   within each node are contiguous.
-#
-#    node_float_arr: size = n_nodes * (n_features + 1)
-#        for each node, this contains the centroid location and the radius
-#
-#    node_int_arr: size = n_nodes * 3
-#        for each node, this contains (idx_start, idx_end, is_leaf)
-#        idx_start, idx_end : these point to the portion of idx_array
-#                             which point to the points in this node
-#        is_leaf : used as a boolean: tells whether this node is a leaf or not.
-#
 cdef void Node_build(ITYPE_t leaf_size, ITYPE_t p,
                      ITYPE_t n_samples, ITYPE_t n_features,
                      ITYPE_t n_nodes,
@@ -692,7 +670,7 @@ cdef void Node_query(DTYPE_t* pt,
                 item.i_node = i1
                 item.dist_LB = dist_LB_1
                 stack_push(&node_stack, item)
-
+        
     stack_destroy(&node_stack)
 
 
