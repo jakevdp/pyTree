@@ -145,6 +145,7 @@ import numpy as np
 cimport numpy as np
 
 cimport cython
+cimport stdlib
 
 #define data type
 DTYPE = np.float64
@@ -370,7 +371,7 @@ cdef class BallTree:
         distances[:] = np.inf
 
         for i from 0 <= i < X.shape[0]:
-            Node_query(0, X[i], self.p, k, distances[i], idx_array[i],
+            Node_query(X[i], self.p, k, distances[i], idx_array[i],
                        self.data, self.idx_array,
                        self.node_float_arr, self.node_int_arr)
             
@@ -641,16 +642,16 @@ cdef DTYPE_t calc_dist_LB(ITYPE_t i_node,
 
 
 #@cython.boundscheck(False)
-cdef void Node_query(ITYPE_t i_node,
-                     np.ndarray[DTYPE_t, ndim=1, mode='c'] pt,
-                     ITYPE_t p, ITYPE_t k,
-                     np.ndarray[DTYPE_t, ndim=1] near_set_dist,
-                     np.ndarray[ITYPE_t, ndim=1] near_set_indx,
-                     np.ndarray[DTYPE_t, ndim=2, mode='c'] data,
-                     np.ndarray[ITYPE_t, ndim=1, mode='c'] idx_array,
-                     np.ndarray[DTYPE_t, ndim=2, mode='c'] node_float_arr,
-                     np.ndarray[ITYPE_t, ndim=2, mode='c'] node_int_arr,
-                     DTYPE_t dist_LB = -1):
+cdef void Node_query_old(ITYPE_t i_node,
+                         np.ndarray[DTYPE_t, ndim=1, mode='c'] pt,
+                         ITYPE_t p, ITYPE_t k,
+                         np.ndarray[DTYPE_t, ndim=1] near_set_dist,
+                         np.ndarray[ITYPE_t, ndim=1] near_set_indx,
+                         np.ndarray[DTYPE_t, ndim=2, mode='c'] data,
+                         np.ndarray[ITYPE_t, ndim=1, mode='c'] idx_array,
+                         np.ndarray[DTYPE_t, ndim=2, mode='c'] node_float_arr,
+                         np.ndarray[ITYPE_t, ndim=2, mode='c'] node_int_arr,
+                         DTYPE_t dist_LB = -1):
     cdef DTYPE_t dist_pt, dist_LB_1, dist_LB_2
     cdef ITYPE_t i, i_pos
     cdef ITYPE_t idx_start = node_int_arr[i_node, 0]
@@ -687,17 +688,139 @@ cdef void Node_query(ITYPE_t i_node,
         dist_LB_2 = calc_dist_LB(2 * i_node + 2,
                                  pt, node_float_arr, p)
         if dist_LB_1 <= dist_LB_2:
-            Node_query(2 * i_node + 1, pt, p, k, near_set_dist, near_set_indx,
+            Node_query_old(2 * i_node + 1, pt, p, k, near_set_dist, near_set_indx,
                        data, idx_array, node_float_arr, node_int_arr, dist_LB_1)
-            Node_query(2 * i_node + 2, pt, p, k, near_set_dist, near_set_indx,
+            Node_query_old(2 * i_node + 2, pt, p, k, near_set_dist, near_set_indx,
                        data, idx_array, node_float_arr, node_int_arr, dist_LB_2)
         else:
-            Node_query(2 * i_node + 2, pt, p, k, near_set_dist, near_set_indx,
+            Node_query_old(2 * i_node + 2, pt, p, k, near_set_dist, near_set_indx,
                        data, idx_array, node_float_arr, node_int_arr, dist_LB_2)
-            Node_query(2 * i_node + 1, pt, p, k, near_set_dist, near_set_indx,
+            Node_query_old(2 * i_node + 1, pt, p, k, near_set_dist, near_set_indx,
                        data, idx_array, node_float_arr, node_int_arr, dist_LB_1)
+
+
+cdef void Node_query(np.ndarray[DTYPE_t, ndim=1, mode='c'] pt,
+                     ITYPE_t p, ITYPE_t k,
+                     np.ndarray[DTYPE_t, ndim=1] near_set_dist,
+                     np.ndarray[ITYPE_t, ndim=1] near_set_indx,
+                     np.ndarray[DTYPE_t, ndim=2, mode='c'] data,
+                     np.ndarray[ITYPE_t, ndim=1, mode='c'] idx_array,
+                     np.ndarray[DTYPE_t, ndim=2, mode='c'] node_float_arr,
+                     np.ndarray[ITYPE_t, ndim=2, mode='c'] node_int_arr):
+    cdef DTYPE_t dist_LB, dist_LB_1, dist_LB_2
+    cdef ITYPE_t i, i1, i2, i_node, is_leaf, idx_start, idx_end, n_points
+
+    cdef stack node_stack
+    cdef stack_item item
+
+    #FIXME: better estimate of stack size
+    stack_create(&node_stack, data.shape[0])
+
+    item.i_node = 0
+    item.dist_LB = calc_dist_LB(0, pt, node_float_arr, p)
+    stack_push(&node_stack, item)
+
+    while(node_stack.n > 0):        
+        item = stack_pop(&node_stack)
+        i_node = item.i_node
+        dist_LB = item.dist_LB
+
+        idx_start = node_int_arr[i_node, 0]
+        idx_end = node_int_arr[i_node, 1]
+        is_leaf = node_int_arr[i_node, 2]
+        n_points = idx_end - idx_start
+
+        #------------------------------------------------------------
+        # Case 1: query point is outside node radius
+        if dist_LB >= max_heap_largest(near_set_dist):
+            continue
+
+        #------------------------------------------------------------
+        # Case 2: this is a leaf node.  Update set of nearby points
+        elif is_leaf:
+            for i from idx_start <= i < idx_end:
+                if n_points == 1:
+                    dist_pt = dist_LB
+                else:
+                    dist_pt = dist(pt, data[idx_array[i]], p)
+
+                if dist_pt < max_heap_largest(near_set_dist):
+                    insert_max_heap(dist_pt, idx_array[i],
+                                    near_set_dist, near_set_indx, k)
+
+        #------------------------------------------------------------
+        # Case 3: Node is not a leaf.  Recursively query subnodes
+        else:
+            i1 = 2 * i_node + 1
+            i2 = i1 + 1
+            dist_LB_1 = calc_dist_LB(i1, pt, node_float_arr, p)
+            dist_LB_2 = calc_dist_LB(i2, pt, node_float_arr, p)
+
+            if dist_LB_1 >= dist_LB_2:
+                item.i_node = i1
+                item.dist_LB = dist_LB_1
+                stack_push(&node_stack, item)
+                
+                item.i_node = i2
+                item.dist_LB = dist_LB_2
+                stack_push(&node_stack, item)
+
+            else:
+                item.i_node = i2
+                item.dist_LB = dist_LB_2
+                stack_push(&node_stack, item)
+                
+                item.i_node = i1
+                item.dist_LB = dist_LB_1
+                stack_push(&node_stack, item)
+
+    stack_destroy(&node_stack)
+
+
         
-                     
+######################################################################
+# stack.  This is used to keep track of the stack in Node_query
+#
+cdef struct stack_item:
+    DTYPE_t dist_LB
+    ITYPE_t i_node
+
+cdef struct stack:
+    int n
+    stack_item* heap
+    int size
+
+cdef inline void stack_create(stack* self, int size):
+    self.size = size
+    self.heap = <stack_item*> stdlib.malloc(sizeof(stack_item) * size)
+    self.n = 0
+
+cdef inline void stack_destroy(stack* self):
+    stdlib.free(self.heap)
+
+cdef inline void stack_resize(stack* self, int new_size):
+    if new_size < self.n:
+        raise ValueError("new_size smaller than current")
+    self.size = new_size
+    self.heap = <stack_item*>stdlib.realloc(<void*> self.heap,
+                                            new_size * sizeof(stack_item))
+
+cdef inline void stack_push(stack* self, stack_item item):
+    if self.n >= self.size:
+        stack_resize(self, 2 * self.size + 1)
+
+    self.heap[self.n] = item
+    self.n += 1
+
+cdef inline stack_item stack_pop(stack* self):
+    if self.n == 0:
+        raise ValueError("popping empty stack")
+    
+    self.n -= 1
+    return self.heap[self.n]
+    
+######################################################################
+
 
 #----------------------------------------------------------------------
 # max_heap functions
