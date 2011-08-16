@@ -159,12 +159,14 @@ ctypedef np.uint32_t ITYPE_t
 BOOL = np.int32
 ctypedef np.int32_t BOOL_t
 
-#max function
+cdef DTYPE_t infinity = np.inf
+
 cdef inline DTYPE_t dmax(DTYPE_t x, DTYPE_t y):
     if x >= y:
         return x
     else:
         return y
+
 
 cdef inline DTYPE_t dmin(DTYPE_t x, DTYPE_t y):
     if x <= y:
@@ -172,56 +174,8 @@ cdef inline DTYPE_t dmin(DTYPE_t x, DTYPE_t y):
     else:
         return y
 
-cdef DTYPE_t infinity = np.inf
 
-
-cdef DTYPE_t dist(np.ndarray[DTYPE_t, ndim=1, mode='c'] x1,
-                  np.ndarray[DTYPE_t, ndim=1, mode='c'] x2,
-                  DTYPE_t p):
-    cdef ITYPE_t i
-    cdef DTYPE_t r, d
-    cdef ITYPE_t L = x1.shape[0]
-    r = 0
-    if p == 2:
-        for i from 0 <= i < L:
-            d = x1[i] - x2[i]
-            r += d * d
-        r = r ** 0.5
-    elif p == infinity:
-        for i from 0 <= i < L:
-            r = dmax(r, abs(x1[i] - x2[i]))
-    elif p == 1:
-        for i from 0 <= i < L:
-            r += abs(x1[i] - x2[i])
-    else:
-        for i from 0 <= i < L:
-            d = abs(x1[i] - x2[i])
-            r += d ** p
-        r = r ** (1. / p)
-    return r
-
-
-cdef DTYPE_t dist_p_ptr(DTYPE_t *x1, DTYPE_t *x2, ITYPE_t n, DTYPE_t p):
-    cdef ITYPE_t i
-    cdef DTYPE_t r, d
-    r = 0
-    if p == 2:
-        for i from 0 <= i < n:
-            d = x1[i] - x2[i]
-            r += d * d
-    elif p == infinity:
-        for i from 0 <= i < n:
-            r = dmax(r, abs(x1[i] - x2[i]))
-    elif p == 1:
-        for i from 0 <= i < n:
-            r += abs(x1[i] - x2[i])
-    else:
-        for i from 0 <= i < n:
-            d = abs(x1[i] - x2[i])
-            r += d ** p
-    return r
-
-cdef DTYPE_t dist_ptr(DTYPE_t *x1, DTYPE_t *x2, ITYPE_t n, DTYPE_t p):
+cdef DTYPE_t dist(DTYPE_t *x1, DTYPE_t *x2, ITYPE_t n, DTYPE_t p):
     cdef ITYPE_t i
     cdef DTYPE_t r, d
     r = 0
@@ -242,29 +196,26 @@ cdef DTYPE_t dist_ptr(DTYPE_t *x1, DTYPE_t *x2, ITYPE_t n, DTYPE_t p):
             r += d ** p
         r = r ** (1. / p)
     return r
-    
+
 
 # dist_p returns d^p
 # in order to recover the true distance, call dist_from_dist_p()
-cdef DTYPE_t dist_p(np.ndarray[DTYPE_t, ndim=1, mode='c'] x1,
-                    np.ndarray[DTYPE_t, ndim=1, mode='c'] x2,
-                    DTYPE_t p):
+cdef DTYPE_t dist_p(DTYPE_t *x1, DTYPE_t *x2, ITYPE_t n, DTYPE_t p):
     cdef ITYPE_t i
     cdef DTYPE_t r, d
-    cdef ITYPE_t L = x1.shape[0]
     r = 0
     if p == 2:
-        for i from 0 <= i < L:
+        for i from 0 <= i < n:
             d = x1[i] - x2[i]
             r += d * d
     elif p == infinity:
-        for i from 0 <= i < L:
+        for i from 0 <= i < n:
             r = dmax(r, abs(x1[i] - x2[i]))
     elif p == 1:
-        for i from 0 <= i < L:
+        for i from 0 <= i < n:
             r += abs(x1[i] - x2[i])
     else:
-        for i from 0 <= i < L:
+        for i from 0 <= i < n:
             d = abs(x1[i] - x2[i])
             r += d ** p
     return r
@@ -367,19 +318,26 @@ cdef class BallTree:
         cdef ITYPE_t N
         cdef np.ndarray distances = np.empty((X.shape[0], k), dtype=DTYPE)
         cdef np.ndarray idx_array = np.empty((X.shape[0], k), dtype=ITYPE)
+        cdef np.ndarray Xi
 
         distances[:] = np.inf
 
         cdef DTYPE_t* dist_ptr = <DTYPE_t*> distances.data
         cdef ITYPE_t* idx_ptr = <ITYPE_t*> idx_array.data
-        cdef ITYPE_t n_samples = X.shape[0]
+        cdef ITYPE_t n_samples_X = X.shape[0]
+        cdef ITYPE_t n_samples = self.data.shape[0]
+        cdef ITYPE_t n_features = self.data.shape[1]
         cdef ITYPE_t n_neighbors = k
 
-        for i from 0 <= i < n_samples:
-            Node_query(X[i], self.p, k, 
+        for i from 0 <= i < n_samples_X:
+            Xi = X[i]
+            Node_query(<DTYPE_t*>Xi.data, self.p, k,
+                       n_samples, n_features,
                        dist_ptr, idx_ptr,
-                       self.data, self.idx_array,
-                       self.node_float_arr, self.node_int_arr)
+                       <DTYPE_t*>self.data.data,
+                       <ITYPE_t*>self.idx_array.data,
+                       <DTYPE_t*>self.node_float_arr.data,
+                       <ITYPE_t*>self.node_int_arr.data)
             dist_ptr += n_neighbors
             idx_ptr += n_neighbors
             
@@ -447,8 +405,8 @@ cdef void Node_build(ITYPE_t leaf_size, ITYPE_t p,
     radius = 0
     for i from idx_start <= i < idx_end:
         radius = dmax(radius, 
-                      dist_p_ptr(centroid, data + n_features * idx_array[i],
-                                 n_features, p))
+                      dist_p(centroid, data + n_features * idx_array[i],
+                             n_features, p))
     centroid[n_features] = dist_from_dist_p(radius, p)
 
     # check if this is a leaf
@@ -524,9 +482,9 @@ cdef void Node_build(ITYPE_t leaf_size, ITYPE_t p,
             radius = 0
             for i from idx_start <= i < idx_end:
                 radius = dmax(radius, 
-                              dist_p_ptr(centroid,
-                                       data + n_features * idx_array[i],
-                                       n_features, p))
+                              dist_p(centroid,
+                                     data + n_features * idx_array[i],
+                                     n_features, p))
             centroid[n_features] = dist_from_dist_p(radius, p)
 
             if n_points <= leaf_size:
@@ -638,37 +596,37 @@ cdef void partition_indices(DTYPE_t* data,
 
 ######################################################################
 
-
-#@cython.boundscheck(False)
-cdef DTYPE_t calc_dist_LB(ITYPE_t i_node,
-                          np.ndarray[DTYPE_t, ndim=1, mode='c'] pt,
-                          np.ndarray[DTYPE_t, ndim=2, mode='c'] node_float_arr,
-                          ITYPE_t p):
-    cdef ITYPE_t n = pt.size
-    return dmax(0, (dist(pt, node_float_arr[i_node, :n], p)
-                    - node_float_arr[i_node, n]))
+cdef DTYPE_t calc_dist_LB(DTYPE_t* pt,
+                          DTYPE_t* centroid,
+                          ITYPE_t n_features,
+                          DTYPE_t p):
+    return dmax(0, (dist(pt, centroid, n_features, p)
+                    - centroid[n_features]))
 
 
-
-cdef void Node_query(np.ndarray[DTYPE_t, ndim=1, mode='c'] pt,
+cdef void Node_query(DTYPE_t* pt,
                      ITYPE_t p, ITYPE_t k,
+                     ITYPE_t n_samples, ITYPE_t n_features,
                      DTYPE_t* near_set_dist,
                      ITYPE_t* near_set_indx,
-                     np.ndarray[DTYPE_t, ndim=2, mode='c'] data,
-                     np.ndarray[ITYPE_t, ndim=1, mode='c'] idx_array,
-                     np.ndarray[DTYPE_t, ndim=2, mode='c'] node_float_arr,
-                     np.ndarray[ITYPE_t, ndim=2, mode='c'] node_int_arr):
+                     DTYPE_t* data,
+                     ITYPE_t* idx_array,
+                     DTYPE_t* node_float_arr,
+                     ITYPE_t* node_int_arr):
     cdef DTYPE_t dist_LB, dist_LB_1, dist_LB_2
-    cdef ITYPE_t i, i1, i2, i_node, is_leaf, idx_start, idx_end, n_points
+    cdef ITYPE_t i, i1, i2, i_node, idx_start, idx_end, n_points
+
+    cdef ITYPE_t* node_info = node_int_arr
 
     cdef stack node_stack
     cdef stack_item item
 
     #FIXME: better estimate of stack size
-    stack_create(&node_stack, data.shape[0])
+    stack_create(&node_stack, n_samples)
 
     item.i_node = 0
-    item.dist_LB = calc_dist_LB(0, pt, node_float_arr, p)
+    item.dist_LB = calc_dist_LB(pt, node_float_arr,
+                                n_features, p)
     stack_push(&node_stack, item)
 
     while(node_stack.n > 0):        
@@ -676,9 +634,10 @@ cdef void Node_query(np.ndarray[DTYPE_t, ndim=1, mode='c'] pt,
         i_node = item.i_node
         dist_LB = item.dist_LB
 
-        idx_start = node_int_arr[i_node, 0]
-        idx_end = node_int_arr[i_node, 1]
-        is_leaf = node_int_arr[i_node, 2]
+        node_info = node_int_arr + i_node * 3
+
+        idx_start = node_info[0]
+        idx_end = node_info[1]
         n_points = idx_end - idx_start
 
         #------------------------------------------------------------
@@ -688,12 +647,14 @@ cdef void Node_query(np.ndarray[DTYPE_t, ndim=1, mode='c'] pt,
 
         #------------------------------------------------------------
         # Case 2: this is a leaf node.  Update set of nearby points
-        elif is_leaf:
+        elif node_info[2]:
             for i from idx_start <= i < idx_end:
                 if n_points == 1:
                     dist_pt = dist_LB
                 else:
-                    dist_pt = dist(pt, data[idx_array[i]], p)
+                    dist_pt = dist(pt,
+                                   data + n_features * idx_array[i],
+                                   n_features, p)
 
                 if dist_pt < max_heap_largest(near_set_dist):
                     insert_max_heap(dist_pt, idx_array[i],
@@ -705,8 +666,13 @@ cdef void Node_query(np.ndarray[DTYPE_t, ndim=1, mode='c'] pt,
         else:
             i1 = 2 * i_node + 1
             i2 = i1 + 1
-            dist_LB_1 = calc_dist_LB(i1, pt, node_float_arr, p)
-            dist_LB_2 = calc_dist_LB(i2, pt, node_float_arr, p)
+            dist_LB_1 = calc_dist_LB(pt, (node_float_arr
+                                          + i1 * (n_features + 1)),
+                                     n_features, p)
+            dist_LB_2 = calc_dist_LB(pt, (node_float_arr
+                                          + i2 * (n_features + 1)),
+                                     n_features, p)
+
 
             # append children to stack: last-in-first-out
             if dist_LB_2 <= dist_LB_1:
