@@ -4,10 +4,16 @@ author : Jake Vanderplas <vanderplas@astro.washington.edu>
 
 This is mainly a test-bed for codes to be included in scikit-learn.
 As such, it's not set up to be a fully-fledged package, but to be installed
-in-place.  Compile with
-  python setup.py build_ext --inplace
+in-place.
 
-Contents:
+Compiling
+---------
+This is set-up for in-place compilation.  Compile with the command
+
+    python setup.py build_ext --inplace
+
+Contents
+--------
 
 cpp_balltree :
     This is the C++ BallTree code which I submitted to scikit-learn.  The
@@ -22,6 +28,5 @@ npy_balltree :
     can be used).
     This is a work in progress. Currently initializing the tree is
     approximately 8-10 times faster than in the C++ version.  The
-    query() function is still quite a bit slower, but there are some
-    speed improvements that will make it competetive.  The query_radius()
+    query() function is about 50% faster.  The query_radius()
     function has not yet been implemented.

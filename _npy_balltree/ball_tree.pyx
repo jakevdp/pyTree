@@ -1,9 +1,17 @@
 # cython: profile=True
 
+# Author: Jake Vanderplas <vanderplas@astro.washington.edu>
+# License: BSD
+
 """
 Ball Tree
 =========
 
+Description
+-----------
+
+Examples
+--------
 
 Implementation Notes
 --------------------
