@@ -175,7 +175,14 @@ cdef inline DTYPE_t dmin(DTYPE_t x, DTYPE_t y):
     else:
         return y
 
+@cython.profile(False)
+cdef inline DTYPE_t dabs(DTYPE_t x):
+    if x >= 0:
+        return x
+    else:
+        return -x
 
+@cython.cdivision(True)
 cdef DTYPE_t dist(DTYPE_t *x1, DTYPE_t *x2, ITYPE_t n, DTYPE_t p):
     cdef ITYPE_t i
     cdef DTYPE_t r, d
@@ -187,20 +194,20 @@ cdef DTYPE_t dist(DTYPE_t *x1, DTYPE_t *x2, ITYPE_t n, DTYPE_t p):
         r = r ** 0.5
     elif p == infinity:
         for i from 0 <= i < n:
-            r = dmax(r, abs(x1[i] - x2[i]))
+            r = dmax(r, dabs(x1[i] - x2[i]))
     elif p == 1:
         for i from 0 <= i < n:
-            r += abs(x1[i] - x2[i])
+            r += dabs(x1[i] - x2[i])
     else:
         for i from 0 <= i < n:
-            d = abs(x1[i] - x2[i])
+            d = dabs(x1[i] - x2[i])
             r += d ** p
         r = r ** (1. / p)
     return r
 
-
 # dist_p returns d^p
 # in order to recover the true distance, call dist_from_dist_p()
+@cython.cdivision(True)
 cdef DTYPE_t dist_p(DTYPE_t *x1, DTYPE_t *x2, ITYPE_t n, DTYPE_t p):
     cdef ITYPE_t i
     cdef DTYPE_t r, d
@@ -211,17 +218,17 @@ cdef DTYPE_t dist_p(DTYPE_t *x1, DTYPE_t *x2, ITYPE_t n, DTYPE_t p):
             r += d * d
     elif p == infinity:
         for i from 0 <= i < n:
-            r = dmax(r, abs(x1[i] - x2[i]))
+            r = dmax(r, dabs(x1[i] - x2[i]))
     elif p == 1:
         for i from 0 <= i < n:
-            r += abs(x1[i] - x2[i])
+            r += dabs(x1[i] - x2[i])
     else:
         for i from 0 <= i < n:
-            d = abs(x1[i] - x2[i])
+            d = dabs(x1[i] - x2[i])
             r += d ** p
     return r
 
-
+@cython.cdivision(True)
 cdef DTYPE_t dist_from_dist_p(DTYPE_t r, DTYPE_t p):
     if p == 2:
         return r ** 0.5
@@ -231,6 +238,59 @@ cdef DTYPE_t dist_from_dist_p(DTYPE_t r, DTYPE_t p):
         return r
     else:
         return r ** (1. / p)
+
+
+######################################################################
+# stack.  This is used to keep track of the stack in Node_query
+#
+cdef struct stack_item:
+    DTYPE_t dist_LB
+    ITYPE_t i_node
+
+
+cdef struct stack:
+    int n
+    stack_item* heap
+    int size
+
+
+@cython.profile(False)
+cdef inline void stack_create(stack* self, int size):
+    self.size = size
+    self.heap = <stack_item*> stdlib.malloc(sizeof(stack_item) * size)
+    self.n = 0
+
+
+@cython.profile(False)
+cdef inline void stack_destroy(stack* self):
+    stdlib.free(self.heap)
+
+
+@cython.profile(False)
+cdef inline void stack_resize(stack* self, int new_size):
+    if new_size < self.n:
+        raise ValueError("new_size smaller than current")
+    self.size = new_size
+    self.heap = <stack_item*>stdlib.realloc(<void*> self.heap,
+                                            new_size * sizeof(stack_item))
+
+@cython.profile(False)
+cdef inline void stack_push(stack* self, stack_item item):
+    if self.n >= self.size:
+        stack_resize(self, 2 * self.size + 1)
+
+    self.heap[self.n] = item
+    self.n += 1
+
+@cython.profile(False)
+cdef inline stack_item stack_pop(stack* self):
+    if self.n == 0:
+        raise ValueError("popping empty stack")
+    
+    self.n -= 1
+    return self.heap[self.n]
+    
+######################################################################
 
 
 cdef class BallTree:
@@ -332,17 +392,23 @@ cdef class BallTree:
         cdef ITYPE_t n_features = self.data.shape[1]
         cdef ITYPE_t n_neighbors = k
 
+        #FIXME: better estimate of stack size
+        cdef stack node_stack
+        stack_create(&node_stack, n_samples)
+
         for i from 0 <= i < n_samples_X:
             Xi = X[i]
-            Node_query(<DTYPE_t*>Xi.data, self.p, k,
-                       n_samples, n_features,
+            Node_query(<DTYPE_t*>Xi.data, self.p, k, n_features,
                        dist_ptr, idx_ptr,
                        <DTYPE_t*>self.data.data,
                        <ITYPE_t*>self.idx_array.data,
                        <DTYPE_t*>self.node_float_arr.data,
-                       <ITYPE_t*>self.node_int_arr.data)
+                       <ITYPE_t*>self.node_int_arr.data,
+                        &node_stack)
             dist_ptr += n_neighbors
             idx_ptr += n_neighbors
+        
+        stack_destroy(&node_stack)
             
         # deflatten results
         if return_distance:
@@ -351,7 +417,7 @@ cdef class BallTree:
         else:
             return idx_array.reshape((orig_shape[:-1]) + (k,))
         
-
+@cython.cdivision(True)
 cdef void Node_build(ITYPE_t leaf_size, ITYPE_t p,
                      ITYPE_t n_samples, ITYPE_t n_features,
                      ITYPE_t n_nodes,
@@ -494,6 +560,7 @@ cdef inline void copy_array(DTYPE_t* x, DTYPE_t* y, ITYPE_t n):
     for i from 0 <= i < n:
         x[i] = y[i]
 
+@cython.cdivision(True)
 cdef void compute_centroid(DTYPE_t* centroid,
                            DTYPE_t* data,
                            ITYPE_t* node_indices,
@@ -590,31 +657,28 @@ cdef inline DTYPE_t calc_dist_LB(DTYPE_t* pt,
 
 cdef void Node_query(DTYPE_t* pt,
                      ITYPE_t p, ITYPE_t k,
-                     ITYPE_t n_samples, ITYPE_t n_features,
+                     ITYPE_t n_features,
                      DTYPE_t* near_set_dist,
                      ITYPE_t* near_set_indx,
                      DTYPE_t* data,
                      ITYPE_t* idx_array,
                      DTYPE_t* node_float_arr,
-                     ITYPE_t* node_int_arr):
-    cdef DTYPE_t dist_LB, dist_LB_1, dist_LB_2
-    cdef ITYPE_t i, i1, i2, i_node, idx_start, idx_end, n_points
+                     ITYPE_t* node_int_arr,
+                     stack* node_stack):
+    cdef DTYPE_t dist_pt, dist_LB, dist_LB_1, dist_LB_2
+    cdef ITYPE_t i, i1, i2, i_node, idx_start, idx_end
 
     cdef ITYPE_t* node_info = node_int_arr
 
-    cdef stack node_stack
     cdef stack_item item
-
-    #FIXME: better estimate of stack size
-    stack_create(&node_stack, n_samples)
 
     item.i_node = 0
     item.dist_LB = calc_dist_LB(pt, node_float_arr,
                                 n_features, p)
-    stack_push(&node_stack, item)
+    stack_push(node_stack, item)
 
     while(node_stack.n > 0):        
-        item = stack_pop(&node_stack)
+        item = stack_pop(node_stack)
         i_node = item.i_node
         dist_LB = item.dist_LB
 
@@ -622,7 +686,6 @@ cdef void Node_query(DTYPE_t* pt,
 
         idx_start = node_info[0]
         idx_end = node_info[1]
-        n_points = idx_end - idx_start
 
         #------------------------------------------------------------
         # Case 1: query point is outside node radius
@@ -664,76 +727,20 @@ cdef void Node_query(DTYPE_t* pt,
             if dist_LB_2 <= dist_LB_1:
                 item.i_node = i1
                 item.dist_LB = dist_LB_1
-                stack_push(&node_stack, item)
+                stack_push(node_stack, item)
                 
                 item.i_node = i2
                 item.dist_LB = dist_LB_2
-                stack_push(&node_stack, item)
+                stack_push(node_stack, item)
 
             else:
                 item.i_node = i2
                 item.dist_LB = dist_LB_2
-                stack_push(&node_stack, item)
+                stack_push(node_stack, item)
                 
                 item.i_node = i1
                 item.dist_LB = dist_LB_1
-                stack_push(&node_stack, item)
-        
-    stack_destroy(&node_stack)
-
-
-        
-######################################################################
-# stack.  This is used to keep track of the stack in Node_query
-#
-cdef struct stack_item:
-    DTYPE_t dist_LB
-    ITYPE_t i_node
-
-
-cdef struct stack:
-    int n
-    stack_item* heap
-    int size
-
-
-@cython.profile(False)
-cdef inline void stack_create(stack* self, int size):
-    self.size = size
-    self.heap = <stack_item*> stdlib.malloc(sizeof(stack_item) * size)
-    self.n = 0
-
-
-@cython.profile(False)
-cdef inline void stack_destroy(stack* self):
-    stdlib.free(self.heap)
-
-
-@cython.profile(False)
-cdef inline void stack_resize(stack* self, int new_size):
-    if new_size < self.n:
-        raise ValueError("new_size smaller than current")
-    self.size = new_size
-    self.heap = <stack_item*>stdlib.realloc(<void*> self.heap,
-                                            new_size * sizeof(stack_item))
-
-@cython.profile(False)
-cdef inline void stack_push(stack* self, stack_item item):
-    if self.n >= self.size:
-        stack_resize(self, 2 * self.size + 1)
-
-    self.heap[self.n] = item
-    self.n += 1
-
-@cython.profile(False)
-cdef inline stack_item stack_pop(stack* self):
-    if self.n == 0:
-        raise ValueError("popping empty stack")
-    
-    self.n -= 1
-    return self.heap[self.n]
-    
-######################################################################
+                stack_push(node_stack, item)
 
 
 #----------------------------------------------------------------------
