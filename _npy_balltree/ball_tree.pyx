@@ -299,8 +299,25 @@ cdef inline stack_item stack_pop(stack* self):
     return self.heap[self.n]
     
 ######################################################################
+# estimate_num_nodes
+#  This is an estimate of the number of nodes needed given the number
+#  of input data samples and the size of a leaf node.  Though the exact
+#  value could be calculated explicitly, this gives an empirically
+#  determined upper-bound, as long as any node with an even number of
+#  points puts exactly half in each child node, and any node with an odd
+#  number of points puts (N+1)/2 in the first child (with index 2*i+1) and
+#  (N-1)/2 in the second child (with index 2*i+2)
+#
+#  For leaf_size ~ 20, the estimate leads to very little wasted space.
+#  For leaf_size near 1, and for a near integer log2(n_samples / leaf_size),
+#  the wasted space can be more significant.
+cdef inline ITYPE_t estimate_num_nodes(ITYPE_t n_samples,
+                                       ITYPE_t leaf_size):
+    return 2 ** (1 + np.ceil(np.log2((n_samples + leaf_size - 1)
+                                     / leaf_size))) - 1
 
 
+######################################################################
 cdef class BallTree:
     """
     BallTree class
@@ -355,8 +372,7 @@ cdef class BallTree:
         
         cdef ITYPE_t n_samples = self.data.shape[0]
         cdef ITYPE_t n_features = self.data.shape[1]
-        cdef ITYPE_t n_nodes = (2 ** (1 + np.ceil(np.log2((n_samples + 2)
-                                                          / leaf_size))) - 1)
+        cdef ITYPE_t n_nodes = estimate_num_nodes(n_samples, leaf_size)
 
         self.idx_array = np.arange(n_samples, dtype=ITYPE)
     
