@@ -26,6 +26,9 @@ def calc_max_index(N, leaf_size=1, i=0):
 
         return max(calc_max_index(N1, leaf_size, i1),
                    calc_max_index(N2, leaf_size, i2))
+
+def calc_upper_bound(N, leaf_size=1):
+    return 2 ** (1 + np.ceil(np.log2((N + leaf_size - 1)/ leaf_size))) - 1
         
 
 if __name__ == '__main__':
@@ -36,7 +39,7 @@ if __name__ == '__main__':
 
     array_size = 1 + np.array([calc_max_index(n, leaf_size) for n in N])
 
-    upper_bound = 2 ** (1 + np.ceil(np.log2((N + leaf_size - 1)/ leaf_size))) - 1
+    upper_bound = calc_upper_bound(N, leaf_size)
 
     pl.subplot(211)
     pl.title("leaf_size = %i" % leaf_size)
