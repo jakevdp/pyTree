@@ -52,7 +52,7 @@ start, so there is not as much flexibility in building it.
 Because understanding a ball tree is simpler with recursive code, here is some
 pseudo-code to show the structure of the main functionality
 
-    # Ball Tree pseudo code
+    # Ball Tree pseudo-code
 
     class Node:
         #class data:
@@ -101,6 +101,7 @@ pseudo-code to show the structure of the main functionality
         def query(point, num_neighbors):
             neighbors_heap = empty_heap_of_size(num_neighbors)
             root_node.query(point, neighbors_heap)
+            return get_index_array(neighbors_heap)
                 
 This certainly is not a complete description, but should give the basic idea
 of the form of the algorithm.  The implementation below is much faster than
@@ -117,22 +118,17 @@ expected number of nodes `n_nodes`, an allocates the following arrays:
     This can be thought of as an array of pointers to the data in `data`.
     Rather than shuffling around the data itself, we shuffle around pointers
     to the rows in data.
-* `node_float_arr` : a float array of shape (n_nodes, n_features + 1)
-    This stores the floating-point information associated with each node.
-    For a node of index `i_node`, the node centroid is stored at
-    `node_float_arr[i_node, :n_features]` and the node radius is stored at
-    `node_float_arr[n_features]`.
-* `node_int_arr` : an integer array of shape (n_nodes, 3)
-    This stores the integer information associated with each node.  For
-    a node of index `i_node`, the following variables are stored:
-    - `idx_start = node_int_arr[i_node, 0]`
-    - `idx_end = node_int_arr[i_node, 1]`
-    - `is_leaf = node_int_arr[i_node, 2]`
-    `idx_start` and `idx_end` point to locations in `idx_array` that reference
-    the data in this node.  That is, the points within the current node are
-    given by `data[idx_array[idx_start:idx_end]]`.
-    `is_leaf` is a boolean value which tells whether this node is a leaf: that
-    is, whether or not it has children.
+* `node_info` : a raw bytes array of size n_nodes * sizeof(NodeInfo)
+    NodeInfo is a struct containing the following information for each node:
+
+    - `idx_start`, `idx_end` : integers.  These point to locations
+      in `idx_array` that reference the data in this node.  That is,
+      the points within the current node are given by 
+      `data[idx_array[idx_start:idx_end]]`.
+    - `is_leaf` : integer. This is a boolean value which tells whether
+      this node is a leaf: that is, whether or not it has children.
+    - `radius` : float
+    - `centroid` : float array, size=n_features
 
 You may notice that there are no pointers from parent nodes to child nodes and
 vice-versa.  This is implemented implicitly:  For a node with index `i`, the
@@ -350,26 +346,8 @@ cdef class BallTree:
     --------------------
     
     Instead of dynamically allocating Node objects, this implementation
-    instead uses a pre-allocated numpy array with implicit linking.
-    Four arrays are used:
-        data : float, shape = (n_samples, n_features)
-            The input data array from which the tree is built
-
-        node_float_arr : float, shape = (n_nodes, n_features + 1)
-            For node index i, the array has the following:
-                centroid = node_float_arr[i, :n_features]
-                radius = node_float_arr[i, n_features]
-
-        node_int_arr : int, shape = (n_nodes, 3)
-            For node index i, the array has the following:
-                idx_start = node_int_arr[i, 0]
-                idx_end = node_int_arr[i, 1]
-                is_leaf = node_int_arr[i, 2]
-
-        indices : int, shape = (n_samples,)
-            This array stores a list of indices to which the node arrays point
-            for a node with idx_start and idx_end, the indices of the points
-            in the node are found in indices[idx_start:idx_end]
+    instead uses a pre-allocated numpy data array with type-casting to
+    recover the NodeInfo structures.
 
     The nodes are implicitly linked, in a way that is similar to that of the
     heapsort algorithm.  Node i (zero-indexed) has children at indices
