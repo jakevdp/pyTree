@@ -5,4 +5,5 @@ build
 *.cpp
 Profile.prof
 test/*
+test_cast/*
 *html
