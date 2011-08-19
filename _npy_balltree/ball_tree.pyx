@@ -382,11 +382,11 @@ cdef class BallTree:
                                      dtype=ITYPE, order='C')
         self.p = p
 
-        Node_build(leaf_size, p, n_samples, n_features, n_nodes,
-                   <DTYPE_t*> self.data.data,
-                   <ITYPE_t*> self.idx_array.data,
-                   <DTYPE_t*> self.node_float_arr.data,
-                   <ITYPE_t*> self.node_int_arr.data)
+        self.build_tree_(leaf_size, p, n_samples, n_features, n_nodes,
+                         <DTYPE_t*> self.data.data,
+                         <ITYPE_t*> self.idx_array.data,
+                         <DTYPE_t*> self.node_float_arr.data,
+                         <ITYPE_t*> self.node_int_arr.data)
 
 
     def query(self, X, k, return_distance=True):
@@ -441,141 +441,143 @@ cdef class BallTree:
         else:
             return idx_array.reshape((orig_shape[:-1]) + (k,))
         
-@cython.cdivision(True)
-cdef void Node_build(ITYPE_t leaf_size, ITYPE_t p,
-                     ITYPE_t n_samples, ITYPE_t n_features,
-                     ITYPE_t n_nodes,
-                     DTYPE_t* data,
-                     ITYPE_t* idx_array,
-                     DTYPE_t* node_float_arr,
-                     ITYPE_t* node_int_arr):
-    cdef ITYPE_t idx_start = 0
-    cdef ITYPE_t idx_end = n_samples
-    cdef ITYPE_t n_points = n_samples
-    cdef DTYPE_t radius
-    cdef ITYPE_t i, i_node, i_parent
-
-    cdef DTYPE_t* centroid = node_float_arr
-    cdef ITYPE_t* node_info = node_int_arr
-    cdef ITYPE_t* parent_info
-    cdef DTYPE_t* point
-
-    if n_points == 0:
-        raise ValueError, "zero-sized node"
-
-    #------------------------------------------------------------
-    # take care of the head node
-    node_int_arr[0] = idx_start
-    node_int_arr[1] = idx_end
-
-    # determine Node centroid
-    compute_centroid(centroid, data, idx_array,
-                     n_features, n_samples)
-
-    # determine Node radius
-    radius = 0
-    for i from idx_start <= i < idx_end:
-        radius = dmax(radius, 
-                      dist_p(centroid, data + n_features * idx_array[i],
-                             n_features, p))
-    centroid[n_features] = dist_from_dist_p(radius, p)
-
-    # check if this is a leaf
-    if n_points <= leaf_size:
-        node_info[2] = 1
-
-    else:
-        # not a leaf
-        node_info[2] = 0
         
-        # find dimension with largest spread
-        i_max = find_split_dim(data, idx_array + idx_start,
-                               n_features, n_points)
-        
-        # sort idx_array along this dimension
-        partition_indices(data,
-                          idx_array + idx_start,
-                          i_max,
-                          n_points / 2,
-                          n_features,
-                          n_points)
+    @cython.cdivision(True)
+    cdef void build_tree_(BallTree self,
+                          ITYPE_t leaf_size, ITYPE_t p,
+                          ITYPE_t n_samples, ITYPE_t n_features,
+                          ITYPE_t n_nodes,
+                          DTYPE_t* data,
+                          ITYPE_t* idx_array,
+                          DTYPE_t* node_float_arr,
+                          ITYPE_t* node_int_arr):
+        cdef ITYPE_t idx_start = 0
+        cdef ITYPE_t idx_end = n_samples
+        cdef ITYPE_t n_points = n_samples
+        cdef DTYPE_t radius
+        cdef ITYPE_t i, i_node, i_parent
 
-    #------------------------------------------------------------
-    # cycle through all child nodes
-    for i_node from 1 <= i_node < n_nodes:
-        i_parent = (i_node - 1) / 2
-        parent_info = node_int_arr + 3 * i_parent
-        
-        node_info = node_int_arr + 3 * i_node
-        node_info[2] = 1
-
-        # if parent is a leaf then we stop here
-        if parent_info[2]:
-            continue
-    
-        centroid = node_float_arr + i_node * (n_features + 1)
-        
-        # find indices for this node
-        idx_start = parent_info[0]
-        idx_end = parent_info[1]
-        
-        if i_node % 2 == 1:
-            idx_start = (idx_start + idx_end) / 2
-        else:
-            idx_end = (idx_start + idx_end) / 2
-
-        node_info[0] = idx_start
-        node_info[1] = idx_end
-
-        n_points = idx_end - idx_start
+        cdef DTYPE_t* centroid = node_float_arr
+        cdef ITYPE_t* node_info = node_int_arr
+        cdef ITYPE_t* parent_info
+        cdef DTYPE_t* point
 
         if n_points == 0:
             raise ValueError, "zero-sized node"
 
-        elif n_points == 1:
-            #copy this point to centroid
-            copy_array(centroid, 
-                       data + idx_array[idx_start] * n_features,
-                       n_features)
+        #------------------------------------------------------------
+        # take care of the head node
+        node_int_arr[0] = idx_start
+        node_int_arr[1] = idx_end
 
-            #store radius in array
-            centroid[n_features] = 0
+        # determine Node centroid
+        compute_centroid(centroid, data, idx_array,
+                         n_features, n_samples)
 
-            #is a leaf
+        # determine Node radius
+        radius = 0
+        for i from idx_start <= i < idx_end:
+            radius = dmax(radius, 
+                          dist_p(centroid, data + n_features * idx_array[i],
+                                 n_features, p))
+        centroid[n_features] = dist_from_dist_p(radius, p)
+
+        # check if this is a leaf
+        if n_points <= leaf_size:
             node_info[2] = 1
 
         else:
-            # determine Node centroid
-            compute_centroid(centroid, data, idx_array + idx_start,
-                             n_features, n_points)
+            # not a leaf
+            node_info[2] = 0
 
-            # determine Node radius
-            radius = 0
-            for i from idx_start <= i < idx_end:
-                radius = dmax(radius, 
-                              dist_p(centroid,
-                                     data + n_features * idx_array[i],
-                                     n_features, p))
-            centroid[n_features] = dist_from_dist_p(radius, p)
+            # find dimension with largest spread
+            i_max = find_split_dim(data, idx_array + idx_start,
+                                   n_features, n_points)
 
-            if n_points <= leaf_size:
+            # sort idx_array along this dimension
+            partition_indices(data,
+                              idx_array + idx_start,
+                              i_max,
+                              n_points / 2,
+                              n_features,
+                              n_points)
+
+        #------------------------------------------------------------
+        # cycle through all child nodes
+        for i_node from 1 <= i_node < n_nodes:
+            i_parent = (i_node - 1) / 2
+            parent_info = node_int_arr + 3 * i_parent
+
+            node_info = node_int_arr + 3 * i_node
+            node_info[2] = 1
+
+            # if parent is a leaf then we stop here
+            if parent_info[2]:
+                continue
+
+            centroid = node_float_arr + i_node * (n_features + 1)
+
+            # find indices for this node
+            idx_start = parent_info[0]
+            idx_end = parent_info[1]
+
+            if i_node % 2 == 1:
+                idx_start = (idx_start + idx_end) / 2
+            else:
+                idx_end = (idx_start + idx_end) / 2
+
+            node_info[0] = idx_start
+            node_info[1] = idx_end
+
+            n_points = idx_end - idx_start
+
+            if n_points == 0:
+                raise ValueError, "zero-sized node"
+
+            elif n_points == 1:
+                #copy this point to centroid
+                copy_array(centroid, 
+                           data + idx_array[idx_start] * n_features,
+                           n_features)
+
+                #store radius in array
+                centroid[n_features] = 0
+
+                #is a leaf
                 node_info[2] = 1
 
             else:
-                # not a leaf
-                node_info[2] = 0
-                
-                # find dimension with largest spread
-                i_max = find_split_dim(data, idx_array + idx_start,
-                                       n_features, n_points)
-                
-                # sort indices along this dimension
-                partition_indices(data,
-                                  idx_array + idx_start,
-                                  i_max,
-                                  n_points / 2,
-                                  n_features,
-                                  n_points)
+                # determine Node centroid
+                compute_centroid(centroid, data, idx_array + idx_start,
+                                 n_features, n_points)
+
+                # determine Node radius
+                radius = 0
+                for i from idx_start <= i < idx_end:
+                    radius = dmax(radius, 
+                                  dist_p(centroid,
+                                         data + n_features * idx_array[i],
+                                         n_features, p))
+                centroid[n_features] = dist_from_dist_p(radius, p)
+
+                if n_points <= leaf_size:
+                    node_info[2] = 1
+
+                else:
+                    # not a leaf
+                    node_info[2] = 0
+
+                    # find dimension with largest spread
+                    i_max = find_split_dim(data, idx_array + idx_start,
+                                           n_features, n_points)
+
+                    # sort indices along this dimension
+                    partition_indices(data,
+                                      idx_array + idx_start,
+                                      i_max,
+                                      n_points / 2,
+                                      n_features,
+                                      n_points)
 
 @cython.profile(False)
 cdef inline void copy_array(DTYPE_t* x, DTYPE_t* y, ITYPE_t n):
@@ -677,6 +679,7 @@ cdef inline DTYPE_t calc_dist_LB(DTYPE_t* pt,
                                  DTYPE_t p):
     return dmax(0, (dist(pt, centroid, n_features, p)
                     - centroid[n_features]))
+
 
 
 cdef void Node_query(DTYPE_t* pt,
