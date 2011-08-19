@@ -53,19 +53,24 @@ dist, ind = compute_neighbors(X, npyBallTree)
 print "c++ code:"
 sk_dist, sk_ind = compute_neighbors(X, cppBallTree)
 
+indices_match = np.allclose(ind, sk_ind)
+distances_match = np.allclose(dist, sk_dist)
+
 print "Matches:"
-print ' indices:  ', np.allclose(dist, sk_dist)
-print ' distances:', np.allclose(ind, sk_ind)
+print ' indices:  ', indices_match
+print ' distances:', distances_match
 
-i_diff = np.unique(np.where(abs(dist - sk_dist) > 1E-10)[0])
+if not indices_match or not distances_match:
+    i_diff = np.unique(np.where(abs(dist - sk_dist) > 1E-10)[0])
 
-if i_diff > 0:
-    print 70*'!'
-    print '    ', i_diff, 'differences detected!!'
-    print '     note: random seed =', rseed
-#for i in i_diff:
-#    print i, ind[i], sk_ind[i]
-#    print '  ', dist[i], sk_dist[i]
+    if i_diff > 0:
+        print 70*'!'
+        print '    ', len(i_diff), 'differences detected!!'
+        print '     note: random seed =', rseed
+
+    #for i in i_diff:
+    #    print i, ind[i], sk_ind[i]
+    #    print '  ', dist[i], sk_dist[i]
 
 
 #pylab.show()
