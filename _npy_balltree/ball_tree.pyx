@@ -286,7 +286,7 @@ cdef struct NodeInfo:
 # stack struct
 #  This is used to keep track of the recursion stack in Node_query
 cdef struct stack_item:
-    DTYPE_t dist_LB
+    DTYPE_t dist_p_LB
     ITYPE_t i_node
 
 
@@ -597,36 +597,36 @@ cdef class BallTree:
         cdef ITYPE_t p = self.p
         cdef ITYPE_t n_features = self.data.shape[1]
         
-        cdef DTYPE_t dist_pt, dist_LB, dist_LB_1, dist_LB_2
+        cdef DTYPE_t dist_pt, dist_p_LB, dist_p_LB_1, dist_p_LB_2
         cdef ITYPE_t i, i1, i2, i_node
 
         cdef stack_item item
 
         item.i_node = 0
-        item.dist_LB = calc_dist_LB(pt, node_centroid_arr,
-                                    node_info.radius,
-                                    n_features, p)
+        item.dist_p_LB = calc_dist_p_LB(pt, node_centroid_arr,
+                                        node_info.radius,
+                                        n_features, p)
         stack_push(node_stack, item)
 
         while(node_stack.n > 0):        
             item = stack_pop(node_stack)
             i_node = item.i_node
-            dist_LB = item.dist_LB
+            dist_p_LB = item.dist_p_LB
 
             node_info = node_info_arr + i_node
 
             #------------------------------------------------------------
             # Case 1: query point is outside node radius
-            if dist_LB >= pqueue_largest(near_set_dist, k):
+            if dist_p_LB >= pqueue_largest(near_set_dist, k):
                 continue
 
             #------------------------------------------------------------
             # Case 2: this is a leaf node.  Update set of nearby points
             elif node_info.is_leaf:
                 for i from node_info.idx_start <= i < node_info.idx_end:
-                    dist_pt = dist(pt,
-                                   data + n_features * idx_array[i],
-                                   n_features, p)
+                    dist_pt = dist_p(pt,
+                                     data + n_features * idx_array[i],
+                                     n_features, p)
 
                     if dist_pt < pqueue_largest(near_set_dist, k):
                         pqueue_insert(dist_pt, idx_array[i],
@@ -638,35 +638,38 @@ cdef class BallTree:
             else:
                 i1 = 2 * i_node + 1
                 i2 = i1 + 1
-                dist_LB_1 = calc_dist_LB(pt, (node_centroid_arr
-                                              + i1 * n_features),
-                                         node_info_arr[i1].radius,
-                                         n_features, p)
-                dist_LB_2 = calc_dist_LB(pt, (node_centroid_arr
-                                              + i2 * n_features),
-                                         node_info_arr[i2].radius,
-                                         n_features, p)
+                dist_p_LB_1 = calc_dist_p_LB(pt, (node_centroid_arr
+                                                  + i1 * n_features),
+                                             node_info_arr[i1].radius,
+                                             n_features, p)
+                dist_p_LB_2 = calc_dist_p_LB(pt, (node_centroid_arr
+                                                  + i2 * n_features),
+                                             node_info_arr[i2].radius,
+                                             n_features, p)
 
 
                 # append children to stack: last-in-first-out
-                if dist_LB_2 <= dist_LB_1:
+                if dist_p_LB_2 <= dist_p_LB_1:
                     item.i_node = i1
-                    item.dist_LB = dist_LB_1
+                    item.dist_p_LB = dist_p_LB_1
                     stack_push(node_stack, item)
 
                     item.i_node = i2
-                    item.dist_LB = dist_LB_2
+                    item.dist_p_LB = dist_p_LB_2
                     stack_push(node_stack, item)
 
                 else:
                     item.i_node = i2
-                    item.dist_LB = dist_LB_2
+                    item.dist_p_LB = dist_p_LB_2
                     stack_push(node_stack, item)
 
                     item.i_node = i1
-                    item.dist_LB = dist_LB_1
+                    item.dist_p_LB = dist_p_LB_1
                     stack_push(node_stack, item)
-
+        
+        for i from 0 <= i < k:
+            near_set_dist[i] = dist_from_dist_p(near_set_dist[i], p)
+            
 
 @cython.profile(False)
 cdef inline void copy_array(DTYPE_t* x, DTYPE_t* y, ITYPE_t n):
@@ -761,16 +764,16 @@ cdef void partition_indices(DTYPE_t* data,
 
 
 ######################################################################
-# calc_dist_LB
+# calc_dist_p_LB
 #  This calculates the lower-bound distance between a point and a node
 @cython.profile(False)
-cdef inline DTYPE_t calc_dist_LB(DTYPE_t* pt,
-                                 DTYPE_t* centroid,
-                                 DTYPE_t radius,
-                                 ITYPE_t n_features,
-                                 DTYPE_t p):
-    return dmax(0, (dist(pt, centroid, n_features, p)
-                    - radius))
+cdef inline DTYPE_t calc_dist_p_LB(DTYPE_t* pt,
+                                   DTYPE_t* centroid,
+                                   DTYPE_t radius,
+                                   ITYPE_t n_features,
+                                   DTYPE_t p):
+    return dist_p_from_dist(dmax(0, (dist(pt, centroid, n_features, p)
+                                     - radius)), p)
 
 ######################################################################
 # priority queue
