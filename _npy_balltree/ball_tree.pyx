@@ -439,6 +439,59 @@ cdef class BallTree:
         else:
             return idx_array.reshape((orig_shape[:-1]) + (k,))
 
+    def query_radius(self, X, r, return_distance=False, count_only=False):
+        if count_only and return_distance:
+            raise ValueError("count_only and return_distance "
+                             "cannot both be true")
+        X = np.atleast_2d(X)
+        assert X.shape[-1] == self.data.shape[1]
+
+        if not count_only:
+            raise NotImplementedError
+
+        cdef np.ndarray idx_array, distances, pt, count
+
+        # make the radius array
+        r = np.atleast_1d(r)
+        if r.shape == (1,):
+            r = r[0] * np.ones(X.shape[:-1], dtype=np.double)
+        else:
+            assert r.shape == X.shape[:-1]
+
+        # almost-flatten X for iteration
+        orig_shape = X.shape
+        X = X.reshape((-1, X.shape[-1]))
+        r = r.reshape(-1)
+
+        # allocate output
+        if count_only:
+            count = np.zeros(X.shape[0], ITYPE)
+        else:
+            idx_array = np.empty(X.shape[0], dtype='object')
+            distances = np.empty(X.shape[0], dtype='object')
+
+        
+        #FIXME: use a better estimate of stack size
+        cdef stack node_stack
+        stack_create(&node_stack, self.data.shape[0])
+
+        for pt_idx, pt in enumerate(X):
+            count[pt_idx] = self.query_radius_count_(<DTYPE_t*>pt.data,
+                                                     r[pt_idx],
+                                                     &node_stack)
+
+        stack_destroy(&node_stack)
+
+        # deflatten results
+        if count_only:
+            return count.reshape(orig_shape[:-1])
+        elif return_distance:
+            return (idx_array.reshape(orig_shape[:-1]),
+                    distances.reshape(orig_shape[:-1]))
+        else:
+            return idx_array.reshape(orig_shape[:-1])
+        
+
     @cython.cdivision(True)
     cdef ITYPE_t enough_space_allocated_(BallTree self):
         cdef ITYPE_t i
@@ -671,7 +724,70 @@ cdef class BallTree:
         
         for i from 0 <= i < k:
             near_set_dist[i] = dist_from_dist_p(near_set_dist[i], p)
-            
+
+    cdef ITYPE_t query_radius_count_(BallTree self,
+                                     DTYPE_t* pt, DTYPE_t r,
+                                     stack* node_stack):
+        cdef DTYPE_t* data = <DTYPE_t*> self.data.data
+        cdef ITYPE_t* idx_array = <ITYPE_t*> self.idx_array.data
+        cdef DTYPE_t* node_centroid_arr = <DTYPE_t*> self.node_centroid_arr.data
+        cdef NodeInfo* node_info_arr = <NodeInfo*> self.node_info_arr.data
+        cdef NodeInfo* node_info = node_info_arr
+
+        cdef ITYPE_t p = self.p
+        cdef ITYPE_t n_features = self.data.shape[1]
+        cdef ITYPE_t i, i_node
+        cdef ITYPE_t count = 0
+        cdef DTYPE_t r_p = dist_p_from_dist(r, p)
+        cdef DTYPE_t dist_pt
+
+        cdef stack_item item
+
+        item.i_node = 0
+        stack_push(node_stack, item)
+
+        while(node_stack.n > 0):        
+            item = stack_pop(node_stack)
+            i_node = item.i_node
+            node_info = node_info_arr + i_node
+
+            dist_pt = dist(pt, node_centroid_arr + n_features * i_node,
+                           n_features, p)
+
+            #------------------------------------------------------------
+            # Case 1: all node points are outside distance r.
+            #         prune this branch.
+            if dist_pt - node_info.radius > r:
+                continue
+
+            #------------------------------------------------------------
+            # Case 2: all node points are within distance r
+            #         add all points
+            elif dist_pt + node_info.radius < r:
+                count += (node_info.idx_end - node_info.idx_start)
+
+            #------------------------------------------------------------
+            # Case 3: this is a leaf node.  Go through all points to 
+            #         determine if they fall within radius
+            elif node_info.is_leaf:
+                for i from node_info.idx_start <= i < node_info.idx_end:
+                    dist_pt = dist_p(pt,
+                                     data + idx_array[i] * n_features,
+                                     n_features, p)
+                    if dist_pt <= r_p:
+                        count += 1
+
+            #------------------------------------------------------------
+            # Case 4: Node is not a leaf.  Recursively query subnodes
+            else:
+                item.i_node = 2 * i_node + 1
+                stack_push(node_stack, item)
+
+                item.i_node = i = 2 * i_node + 2
+                stack_push(node_stack, item)
+
+        return count
+                    
 
 @cython.profile(False)
 cdef inline void copy_array(DTYPE_t* x, DTYPE_t* y, ITYPE_t n):
@@ -766,8 +882,18 @@ cdef void partition_indices(DTYPE_t* data,
 
 
 ######################################################################
+# calc_dist_LB
 # calc_dist_p_LB
 #  This calculates the lower-bound distance between a point and a node
+@cython.profile(False)
+cdef inline DTYPE_t calc_dist_LB(DTYPE_t* pt,
+                                 DTYPE_t* centroid,
+                                 DTYPE_t radius,
+                                 ITYPE_t n_features,
+                                 DTYPE_t p):
+    return dmax(0, (dist(pt, centroid, n_features, p)
+                    - radius))
+
 @cython.profile(False)
 cdef inline DTYPE_t calc_dist_p_LB(DTYPE_t* pt,
                                    DTYPE_t* centroid,
