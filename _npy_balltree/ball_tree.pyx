@@ -9,18 +9,17 @@ Ball Tree
 
 Description
 -----------
+A ball tree is a data object which speeds up nearest neighbor
+searches in high dimensions (see scikit-learn neighbors module
+documentation for an overview of neighbor trees). There are many 
+types of ball trees.  This package provides a basic implementation 
+in cython.  
 
 Examples
 --------
 
 Implementation Notes
 --------------------
-
-A ball tree is a data object which speeds up nearest neighbor
-searches in high dimensions (see scikit-learn neighbors module
-documentation for an overview of neighbor trees). There are many 
-types of ball trees.  This package provides a basic implementation 
-in cython.  
 
 A ball tree can be thought of as a collection of nodes.  Each node
 stores a centroid, a radius, and the pointers to two child nodes.
@@ -104,8 +103,8 @@ pseudo-code to show the structure of the main functionality
                 
 This certainly is not a complete description, but should give the basic idea
 of the form of the algorithm.  The implementation below is much faster than
-anything mimicking the pseudo-code above, but for that reason is much more 
-opaque.  Here's the basic idea.
+anything mirroring the pseudo-code above, but for that reason is much more 
+opaque to understanding.  Here's the basic idea.
 
 The BallTree information is stored using a combination of
 "Array of Structures" and "Structure of Arrays" to maximize speed.
@@ -120,30 +119,28 @@ expected number of nodes `n_nodes`, an allocates the following arrays:
     Rather than shuffling around the data itself, we shuffle around pointers
     to the rows in data.
 * `node_centroid_arr` : a float array of shape `(n_nodes, n_features)`
-    This stores the floating-point information associated with each node.
-    of each node.
-* `node_info_arr` : an integer array of shape (n_nodes, 3)
-    This stores the integer information associated with each node.  For
-    a node of index `i_node`, the following variables are stored:
-    - `idx_start = node_info_arr[i_node, 0]`
-    - `idx_end = node_info_arr[i_node, 1]`
-    - `is_leaf = node_info_arr[i_node, 2]`
-    `idx_start` and `idx_end` point to locations in `idx_array` that reference
-    the data in this node.  That is, the points within the current node are
-    given by `data[idx_array[idx_start:idx_end]]`.
-    `is_leaf` is a boolean value which tells whether this node is a leaf: that
-    is, whether or not it has children.
+    This stores the centroid of the data in each node.
+* `node_info_arr` : a size-`n_nodes` array of `NodeInfo` structures.
+    This stores information associated with each node.  Each `NodeInfo`
+    instance has the following attributes:
+    - `idx_start`
+    - `idx_end` : `idx_start` and `idx_end` reference the part of `idx_array`
+      which point to the data associated with the node.  The data in node with
+      index `i_node` is given by `data[idx_array[idx_start:idx_end]]`
+    - `is_leaf` : a boolean value which tells whether this node is a leaf:
+      that is, whether or not it has children.
+    - `radius` : a floating-point value which gives the distance from
+      the node centroid to the furthest point in the node.
 
 You may notice that there are no pointers from parent nodes to child nodes and
 vice-versa.  This is implemented implicitly:  For a node with index `i`, the
 two children are found at indices `2 * i + 1` and `2 * i + 2`, while the
-parent is found at index `floor((i - 1) / 2)`.  The root node, of course,
-has no parent.
+parent is found at index `floor((i - 1) / 2)`.  The root node has no parent.
 
 With this data structure in place, we can implement the functionality of the
-BallTree pseudo-code spelled-out above, throwing in a few clever tricks to
-make it efficient. Most of the data passing done in this code uses raw data 
-pointers.  Using numpy arrays would be preferable for safety, but the 
+BallTree pseudo-code spelled-out above in a much more efficient manner.
+Most of the data passing done in this code uses raw data  pointers.
+Using numpy arrays would be preferable for safety, but the 
 overhead of array slicing and sub-array construction leads to execution 
 time which is several orders of magnitude slower than the current 
 implementation.
@@ -155,18 +152,18 @@ cimport numpy as np
 cimport cython
 cimport stdlib
 
-#define data type
+######################################################################
+# global definitions
+#
+# type used for data
 DTYPE = np.float64
 ctypedef np.float64_t DTYPE_t
 
-#define integer/index type
+# type used for indices & counts
 ITYPE = np.uint32
 ctypedef np.uint32_t ITYPE_t
 
-#define boolean type
-BOOL = np.int32
-ctypedef np.int32_t BOOL_t
-
+# infinity
 cdef DTYPE_t infinity = np.inf
 
 ######################################################################
@@ -334,57 +331,46 @@ cdef inline stack_item stack_pop(stack* self):
     self.n -= 1
     return self.heap[self.n]
 
-    
-######################################################################
-# estimate_num_nodes
-#  This is an estimate of the number of nodes needed given the number
-#  of input data samples and the size of a leaf node.  Though the exact
-#  value could be calculated explicitly, this gives an empirically
-#  determined upper-bound, as long as any node with an even number of
-#  points puts exactly half in each child node, and any node with an odd
-#  number of points puts (N+1)/2 in the first child (with index 2*i+1) and
-#  (N-1)/2 in the second child (with index 2*i+2)
-#
-#  For leaf_size ~ 20, the estimate leads to very little wasted space.
-#  For leaf_size near 1, and for a near integer log2(n_samples / leaf_size),
-#  the wasted space can be more significant.
-cdef inline ITYPE_t estimate_num_nodes(ITYPE_t n_samples,
-                                       ITYPE_t leaf_size):
-    return 2 ** (1 + np.ceil(np.log2((n_samples + leaf_size - 1)
-                                     / leaf_size))) - 1
-
 
 ######################################################################
 cdef class BallTree:
     """
     Ball Tree for fast nearest-neighbor searches :
 
-    BallTree(M, leaf_size=20)
+    BallTree(X, leaf_size=20, p=2.0)
 
     Parameters
     ----------
-    M : array-like, shape = [N,D]
-            N is the number of points in the data set, and
-            D is the dimension of the parameter space.
-            Note: if M is an aligned array of doubles (not
-            necessarily contiguous) then data will not be
-            copied. Otherwise, an internal copy will be made.
+    X : array-like, shape = [N,D]
+        N is the number of points in the data set, and
+        D is the dimension of the parameter space.
+        Note: if M is an aligned array of doubles (not
+        necessarily contiguous) then data will not be
+        copied. Otherwise, an internal copy will be made.
 
     leaf_size : positive integer (default = 20)
-            Number of points at which to switch to brute-force.
-	    Changing leaf_size will not affect the returned neighbors,
-	    but can significantly impact the speed of a query.  See
-	    discussion in the NeighborsClassifier documentation.
+        Number of points at which to switch to brute-force.
+        Changing leaf_size will not affect the returned neighbors,
+        but can significantly impact the speed of a query.  See
+        discussion in the NeighborsClassifier documentation.
+
+    p : distance metric for the BallTree.  ``p`` encodes the Minkowski
+        p-distance:
+            D = sum((X[i] - X[j]) ** p) ** (1. / p)
+        p must be greater than or equal to 1, so that the triangle
+        inequality will hold.  If ``p == np.inf``, then the distance is
+        equivalent to
+            D = max(X[i] - X[j])
     """
     cdef np.ndarray data
     cdef np.ndarray idx_array
     cdef np.ndarray node_centroid_arr
     cdef np.ndarray node_info_arr
-    cdef ITYPE_t p
+    cdef DTYPE_t p
     cdef ITYPE_t leaf_size
     cdef ITYPE_t n_nodes
     
-    def __init__(self, X, ITYPE_t leaf_size=20, ITYPE_t p=2):
+    def __init__(self, X, ITYPE_t leaf_size=20, DTYPE_t p=2):
         self.data = np.asarray(X, dtype=DTYPE)
         assert self.data.ndim == 2
 
@@ -397,7 +383,7 @@ cdef class BallTree:
         cdef ITYPE_t n_samples = self.data.shape[0]
         cdef ITYPE_t n_features = self.data.shape[1]
 
-        self.n_nodes = estimate_num_nodes(n_samples, self.leaf_size)
+        self.n_nodes = self.estimate_num_nodes()
 
         self.idx_array = np.arange(n_samples, dtype=ITYPE)
 
@@ -413,6 +399,36 @@ cdef class BallTree:
         # this error than a Segmentation fault!
         if not self.enough_space_allocated_():
             raise ValueError, "Fatal: not enough BallTree space allocated"
+
+
+    ######################################################################
+    # estimate_num_nodes
+    #  This is an estimate of the number of nodes needed given the number
+    #  of input data samples and the size of a leaf node.  Though the exact
+    #  value could be calculated explicitly, this gives an empirically
+    #  determined upper-bound, as long as any node with an even number of
+    #  points puts exactly half in each child node, and any node with an odd
+    #  number of points puts (N+1)/2 in the first child (with index 2*i+1) and
+    #  (N-1)/2 in the second child (with index 2*i+2)
+    #
+    #  For leaf_size ~ 20, the estimate leads to very little wasted space.
+    #  For leaf_size near 1, and for a near integer log2(n_samples / leaf_size),
+    #  the wasted space can be more significant.
+    @cython.cdivision(True)
+    cdef inline ITYPE_t estimate_num_nodes(BallTree self):
+        cdef ITYPE_t n_samples = self.data.shape[0]
+        return 2 ** (1 + np.ceil(np.log2((n_samples + self.leaf_size - 1)
+                                         / self.leaf_size))) - 1
+
+    @cython.cdivision(True)
+    cdef ITYPE_t enough_space_allocated_(BallTree self):
+        cdef ITYPE_t i
+        cdef NodeInfo* node_info = <NodeInfo*>self.node_info_arr.data + i
+        # all nodes in the second half of the tree should be leaves.
+        for i from (self.n_nodes - 1) / 2 <= i < self.n_nodes:
+            if not node_info[i].is_leaf:
+                return 0
+        return 1
 
     def query(self, X, n_neighbors, return_distance=True):
         """
@@ -468,8 +484,7 @@ cdef class BallTree:
         cdef stack node_stack
         stack_create(&node_stack, self.data.shape[0])
 
-        for i from 0 <= i < X.shape[0]:
-            Xi = X[i]
+        for Xi in X:
             self.query_one_(<DTYPE_t*>Xi.data, k,
                             dist_ptr, idx_ptr, &node_stack)
             dist_ptr += k
@@ -599,17 +614,6 @@ cdef class BallTree:
         else:
             return idx_array.reshape(orig_shape[:-1])
         
-
-    @cython.cdivision(True)
-    cdef ITYPE_t enough_space_allocated_(BallTree self):
-        cdef ITYPE_t i
-        cdef NodeInfo* node_info = <NodeInfo*>self.node_info_arr.data + i
-        # all nodes in the second half of the tree should be leaves.
-        for i from (self.n_nodes - 1) / 2 <= i < self.n_nodes:
-            if not node_info[i].is_leaf:
-                return 0
-        return 1
-        
     @cython.cdivision(True)
     cdef void build_tree_(BallTree self):
         cdef DTYPE_t* data = <DTYPE_t*> self.data.data
@@ -617,7 +621,7 @@ cdef class BallTree:
         cdef DTYPE_t* node_centroid_arr = <DTYPE_t*> self.node_centroid_arr.data
         cdef NodeInfo* node_info_arr = <NodeInfo*> self.node_info_arr.data
         
-        cdef ITYPE_t p = self.p
+        cdef DTYPE_t p = self.p
         cdef ITYPE_t n_samples = self.data.shape[0]
         cdef ITYPE_t n_features = self.data.shape[1]
 
@@ -757,7 +761,7 @@ cdef class BallTree:
         cdef NodeInfo* node_info_arr = <NodeInfo*> self.node_info_arr.data
         cdef NodeInfo* node_info = node_info_arr
 
-        cdef ITYPE_t p = self.p
+        cdef DTYPE_t p = self.p
         cdef ITYPE_t n_features = self.data.shape[1]
         
         cdef DTYPE_t dist_pt, dist_p_LB, dist_p_LB_1, dist_p_LB_2
@@ -842,7 +846,7 @@ cdef class BallTree:
         cdef NodeInfo* node_info_arr = <NodeInfo*> self.node_info_arr.data
         cdef NodeInfo* node_info = node_info_arr
 
-        cdef ITYPE_t p = self.p
+        cdef DTYPE_t p = self.p
         cdef ITYPE_t n_features = self.data.shape[1]
         cdef ITYPE_t i, i_node
         cdef ITYPE_t count = 0
@@ -906,7 +910,7 @@ cdef class BallTree:
         cdef NodeInfo* node_info_arr = <NodeInfo*> self.node_info_arr.data
         cdef NodeInfo* node_info = node_info_arr
 
-        cdef ITYPE_t p = self.p
+        cdef DTYPE_t p = self.p
         cdef ITYPE_t n_features = self.data.shape[1]
         cdef ITYPE_t i, i_node
         cdef ITYPE_t idx_i = 0
@@ -974,7 +978,7 @@ cdef class BallTree:
         cdef NodeInfo* node_info_arr = <NodeInfo*> self.node_info_arr.data
         cdef NodeInfo* node_info = node_info_arr
 
-        cdef ITYPE_t p = self.p
+        cdef DTYPE_t p = self.p
         cdef ITYPE_t n_features = self.data.shape[1]
         cdef ITYPE_t i, i_node
         cdef ITYPE_t idx_i = 0
