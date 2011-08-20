@@ -312,6 +312,7 @@ cdef inline void stack_destroy(stack* self):
 cdef inline void stack_resize(stack* self, int new_size):
     if new_size < self.n:
         raise ValueError("new_size smaller than current")
+
     self.size = new_size
     self.heap = <stack_item*>stdlib.realloc(<void*> self.heap,
                                             new_size * sizeof(stack_item))
@@ -372,21 +373,21 @@ cdef class BallTree:
         self.data = np.asarray(X, dtype=DTYPE)
         assert self.data.ndim == 2
 
+        assert p >= 1
         self.p = p
-        assert self.p >= 1
 
+        assert leaf_size >= 1
         self.leaf_size = leaf_size
-        assert self.leaf_size > 1
 
         cdef ITYPE_t n_samples = self.data.shape[0]
         cdef ITYPE_t n_features = self.data.shape[1]
-        
+
         self.n_nodes = estimate_num_nodes(n_samples, self.leaf_size)
 
         self.idx_array = np.arange(n_samples, dtype=ITYPE)
-    
+
         self.node_centroid_arr = np.empty((self.n_nodes, n_features),
-                                          dtype=DTYPE, order='C')
+
         self.node_info_arr = np.empty(self.n_nodes * sizeof(NodeInfo),
                                       dtype='c', order='C')
         self.build_tree_()
@@ -402,7 +403,7 @@ cdef class BallTree:
         assert X.shape[-1] == self.data.shape[1]
         assert n_neighbors <= self.data.shape[0]
 
-        # almost-flatten x for iteration
+        # almost-flatten X for iteration
         orig_shape = X.shape
         X = X.reshape((-1, X.shape[-1]))
         X = np.asarray(X, dtype=DTYPE, order='C')
@@ -417,7 +418,7 @@ cdef class BallTree:
         cdef DTYPE_t* dist_ptr = <DTYPE_t*> distances.data
         cdef ITYPE_t* idx_ptr = <ITYPE_t*> idx_array.data
 
-        #FIXME: get a better estimate of stack size
+        #FIXME: use a better estimate of stack size
         cdef stack node_stack
         stack_create(&node_stack, self.data.shape[0])
 
