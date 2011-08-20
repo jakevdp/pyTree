@@ -363,16 +363,22 @@ cdef class BallTree:
     cdef np.ndarray node_float_arr
     cdef np.ndarray node_int_arr
     cdef ITYPE_t p
+    cdef ITYPE_t leaf_size
     
-    def __init__(self, X, leaf_size=20, p=2):
+    def __init__(self, X, ITYPE_t leaf_size=20, ITYPE_t p=2):
         self.data = np.asarray(X, dtype=DTYPE)
         assert self.data.ndim == 2
 
-        assert p >= 1
-        
+        self.p = p
+        assert self.p >= 1
+
+        self.leaf_size = leaf_size
+        assert self.leaf_size > 1
+
         cdef ITYPE_t n_samples = self.data.shape[0]
         cdef ITYPE_t n_features = self.data.shape[1]
-        cdef ITYPE_t n_nodes = estimate_num_nodes(n_samples, leaf_size)
+        
+        cdef ITYPE_t n_nodes = estimate_num_nodes(n_samples, self.leaf_size)
 
         self.idx_array = np.arange(n_samples, dtype=ITYPE)
     
@@ -380,16 +386,11 @@ cdef class BallTree:
                                        dtype=DTYPE, order='C')
         self.node_int_arr = np.empty((n_nodes, 3),
                                      dtype=ITYPE, order='C')
-        self.p = p
 
-        self.build_tree_(leaf_size, p, n_samples, n_features, n_nodes,
-                         <DTYPE_t*> self.data.data,
-                         <ITYPE_t*> self.idx_array.data,
-                         <DTYPE_t*> self.node_float_arr.data,
-                         <ITYPE_t*> self.node_int_arr.data)
+        self.build_tree_()
 
 
-    def query(self, X, k, return_distance=True):
+    def query(self, X, ITYPE_t k, return_distance=True):
         X = np.asarray(X, dtype=DTYPE, order='C')
         X = np.atleast_2d(X)
         assert X.shape[-1] == self.data.shape[1]
@@ -411,26 +412,17 @@ cdef class BallTree:
 
         cdef DTYPE_t* dist_ptr = <DTYPE_t*> distances.data
         cdef ITYPE_t* idx_ptr = <ITYPE_t*> idx_array.data
-        cdef ITYPE_t n_samples_X = X.shape[0]
-        cdef ITYPE_t n_samples = self.data.shape[0]
-        cdef ITYPE_t n_features = self.data.shape[1]
-        cdef ITYPE_t n_neighbors = k
 
         #FIXME: better estimate of stack size
         cdef stack node_stack
-        stack_create(&node_stack, n_samples)
+        stack_create(&node_stack, self.data.shape[0])
 
-        for i from 0 <= i < n_samples_X:
+        for i from 0 <= i < X.shape[0]:
             Xi = X[i]
-            Node_query(<DTYPE_t*>Xi.data, self.p, k, n_features,
-                       dist_ptr, idx_ptr,
-                       <DTYPE_t*>self.data.data,
-                       <ITYPE_t*>self.idx_array.data,
-                       <DTYPE_t*>self.node_float_arr.data,
-                       <ITYPE_t*>self.node_int_arr.data,
-                        &node_stack)
-            dist_ptr += n_neighbors
-            idx_ptr += n_neighbors
+            self.query_one_(<DTYPE_t*>Xi.data, k,
+                            dist_ptr, idx_ptr, &node_stack)
+            dist_ptr += k
+            idx_ptr += k
         
         stack_destroy(&node_stack)
             
@@ -443,14 +435,19 @@ cdef class BallTree:
         
         
     @cython.cdivision(True)
-    cdef void build_tree_(BallTree self,
-                          ITYPE_t leaf_size, ITYPE_t p,
-                          ITYPE_t n_samples, ITYPE_t n_features,
-                          ITYPE_t n_nodes,
-                          DTYPE_t* data,
-                          ITYPE_t* idx_array,
-                          DTYPE_t* node_float_arr,
-                          ITYPE_t* node_int_arr):
+    cdef void build_tree_(BallTree self):
+        cdef DTYPE_t* data = <DTYPE_t*> self.data.data,
+        cdef ITYPE_t* idx_array = <ITYPE_t*> self.idx_array.data,
+        cdef DTYPE_t* node_float_arr = <DTYPE_t*> self.node_float_arr.data,
+        cdef ITYPE_t* node_int_arr = <ITYPE_t*> self.node_int_arr.data
+        
+        cdef ITYPE_t leaf_size = self.leaf_size
+        cdef ITYPE_t p = self.p
+        cdef ITYPE_t n_samples = self.data.shape[0]
+        cdef ITYPE_t n_features = self.data.shape[1]
+        cdef ITYPE_t n_nodes = self.node_int_arr.shape[0]
+        
+
         cdef ITYPE_t idx_start = 0
         cdef ITYPE_t idx_end = n_samples
         cdef ITYPE_t n_points = n_samples
@@ -579,6 +576,98 @@ cdef class BallTree:
                                       n_features,
                                       n_points)
 
+    cdef void query_one_(BallTree self,
+                         DTYPE_t* pt,
+                         ITYPE_t k,
+                         DTYPE_t* near_set_dist,
+                         ITYPE_t* near_set_indx,
+                         stack* node_stack):
+        cdef DTYPE_t* data = <DTYPE_t*> self.data.data,
+        cdef ITYPE_t* idx_array = <ITYPE_t*> self.idx_array.data,
+        cdef DTYPE_t* node_float_arr = <DTYPE_t*> self.node_float_arr.data,
+        cdef ITYPE_t* node_int_arr = <ITYPE_t*> self.node_int_arr.data
+
+        cdef ITYPE_t p = self.p
+        cdef ITYPE_t n_features = self.data.shape[1]
+        
+        cdef DTYPE_t dist_pt, dist_LB, dist_LB_1, dist_LB_2
+        cdef ITYPE_t i, i1, i2, i_node, idx_start, idx_end
+
+        cdef ITYPE_t* node_info = node_int_arr
+
+        cdef stack_item item
+
+        item.i_node = 0
+        item.dist_LB = calc_dist_LB(pt, node_float_arr,
+                                    n_features, p)
+        stack_push(node_stack, item)
+
+        while(node_stack.n > 0):        
+            item = stack_pop(node_stack)
+            i_node = item.i_node
+            dist_LB = item.dist_LB
+
+            node_info = node_int_arr + i_node * 3
+
+            idx_start = node_info[0]
+            idx_end = node_info[1]
+
+            #------------------------------------------------------------
+            # Case 1: query point is outside node radius
+            #if dist_LB >= max_heap_largest(near_set_dist):
+            #    continue
+            if dist_LB >= pqueue_largest(near_set_dist, k):
+                continue
+
+            #------------------------------------------------------------
+            # Case 2: this is a leaf node.  Update set of nearby points
+            elif node_info[2]:
+                for i from idx_start <= i < idx_end:
+                    dist_pt = dist(pt,
+                                   data + n_features * idx_array[i],
+                                   n_features, p)
+
+                    #if dist_pt < max_heap_largest(near_set_dist):
+                    #    max_heap_insert(dist_pt, idx_array[i],
+                    #                    near_set_dist, near_set_indx, k)
+                    if dist_pt < pqueue_largest(near_set_dist, k):
+                        pqueue_insert(dist_pt, idx_array[i],
+                                      near_set_dist, near_set_indx, k)
+
+            #------------------------------------------------------------
+            # Case 3: Node is not a leaf.  Recursively query subnodes
+            #         starting with the one whose centroid is closest
+            else:
+                i1 = 2 * i_node + 1
+                i2 = i1 + 1
+                dist_LB_1 = calc_dist_LB(pt, (node_float_arr
+                                              + i1 * (n_features + 1)),
+                                         n_features, p)
+                dist_LB_2 = calc_dist_LB(pt, (node_float_arr
+                                              + i2 * (n_features + 1)),
+                                         n_features, p)
+
+
+                # append children to stack: last-in-first-out
+                if dist_LB_2 <= dist_LB_1:
+                    item.i_node = i1
+                    item.dist_LB = dist_LB_1
+                    stack_push(node_stack, item)
+
+                    item.i_node = i2
+                    item.dist_LB = dist_LB_2
+                    stack_push(node_stack, item)
+
+                else:
+                    item.i_node = i2
+                    item.dist_LB = dist_LB_2
+                    stack_push(node_stack, item)
+
+                    item.i_node = i1
+                    item.dist_LB = dist_LB_1
+                    stack_push(node_stack, item)
+
+
 @cython.profile(False)
 cdef inline void copy_array(DTYPE_t* x, DTYPE_t* y, ITYPE_t n):
     # copy array y into array x
@@ -682,92 +771,6 @@ cdef inline DTYPE_t calc_dist_LB(DTYPE_t* pt,
 
 
 
-cdef void Node_query(DTYPE_t* pt,
-                     ITYPE_t p, ITYPE_t k,
-                     ITYPE_t n_features,
-                     DTYPE_t* near_set_dist,
-                     ITYPE_t* near_set_indx,
-                     DTYPE_t* data,
-                     ITYPE_t* idx_array,
-                     DTYPE_t* node_float_arr,
-                     ITYPE_t* node_int_arr,
-                     stack* node_stack):
-    cdef DTYPE_t dist_pt, dist_LB, dist_LB_1, dist_LB_2
-    cdef ITYPE_t i, i1, i2, i_node, idx_start, idx_end
-
-    cdef ITYPE_t* node_info = node_int_arr
-
-    cdef stack_item item
-
-    item.i_node = 0
-    item.dist_LB = calc_dist_LB(pt, node_float_arr,
-                                n_features, p)
-    stack_push(node_stack, item)
-
-    while(node_stack.n > 0):        
-        item = stack_pop(node_stack)
-        i_node = item.i_node
-        dist_LB = item.dist_LB
-
-        node_info = node_int_arr + i_node * 3
-
-        idx_start = node_info[0]
-        idx_end = node_info[1]
-
-        #------------------------------------------------------------
-        # Case 1: query point is outside node radius
-        #if dist_LB >= max_heap_largest(near_set_dist):
-        #    continue
-        if dist_LB >= pqueue_largest(near_set_dist, k):
-            continue
-
-        #------------------------------------------------------------
-        # Case 2: this is a leaf node.  Update set of nearby points
-        elif node_info[2]:
-            for i from idx_start <= i < idx_end:
-                dist_pt = dist(pt,
-                               data + n_features * idx_array[i],
-                               n_features, p)
-
-                #if dist_pt < max_heap_largest(near_set_dist):
-                #    max_heap_insert(dist_pt, idx_array[i],
-                #                    near_set_dist, near_set_indx, k)
-                if dist_pt < pqueue_largest(near_set_dist, k):
-                    pqueue_insert(dist_pt, idx_array[i],
-                                  near_set_dist, near_set_indx, k)
-
-        #------------------------------------------------------------
-        # Case 3: Node is not a leaf.  Recursively query subnodes
-        #         starting with the one whose centroid is closest
-        else:
-            i1 = 2 * i_node + 1
-            i2 = i1 + 1
-            dist_LB_1 = calc_dist_LB(pt, (node_float_arr
-                                          + i1 * (n_features + 1)),
-                                     n_features, p)
-            dist_LB_2 = calc_dist_LB(pt, (node_float_arr
-                                          + i2 * (n_features + 1)),
-                                     n_features, p)
-
-
-            # append children to stack: last-in-first-out
-            if dist_LB_2 <= dist_LB_1:
-                item.i_node = i1
-                item.dist_LB = dist_LB_1
-                stack_push(node_stack, item)
-                
-                item.i_node = i2
-                item.dist_LB = dist_LB_2
-                stack_push(node_stack, item)
-
-            else:
-                item.i_node = i2
-                item.dist_LB = dist_LB_2
-                stack_push(node_stack, item)
-                
-                item.i_node = i1
-                item.dist_LB = dist_LB_1
-                stack_push(node_stack, item)
 
 
 #----------------------------------------------------------------------
