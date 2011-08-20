@@ -107,21 +107,22 @@ of the form of the algorithm.  The implementation below is much faster than
 anything mimicking the pseudo-code above, but for that reason is much more 
 opaque.  Here's the basic idea.
 
+The BallTree information is stored using a combination of
+"Array of Structures" and "Structure of Arrays" to maximize speed.
 Given input data of size `(n_samples, n_features)`, BallTree computes the
 expected number of nodes `n_nodes`, an allocates the following arrays:
 
-* `data` : a float array of shape `(n_samples, n_features)
+* `data` : a float array of shape `(n_samples, n_features)`
     This is simply the input data.  If the input matrix is well-formed
     (contiguous, c-ordered, correct data type) then no copy is needed
 * `idx_array` : an integer array of size `n_samples`
     This can be thought of as an array of pointers to the data in `data`.
     Rather than shuffling around the data itself, we shuffle around pointers
     to the rows in data.
-* `node_centroid_arr` : a float array of shape (n_nodes, n_features)
+* `node_centroid_arr` : a float array of shape `(n_nodes, n_features)`
     This stores the floating-point information associated with each node.
-    For a node of index `i_node`, the node centroid is stored at
-    `node_centroid_arr[i_node]` and the node radius is stored at
-    `node_centroid_arr[n_features]`.
+* `node_radius_arr` : a float array of length `n_nodes` storing the radius
+    of each node.
 * `node_info_arr` : an integer array of shape (n_nodes, 3)
     This stores the integer information associated with each node.  For
     a node of index `i_node`, the following variables are stored:
@@ -169,12 +170,16 @@ ctypedef np.int32_t BOOL_t
 
 cdef DTYPE_t infinity = np.inf
 
+######################################################################
+# utility functions: fast max, min, and absolute value
+#
 @cython.profile(False)
 cdef inline DTYPE_t dmax(DTYPE_t x, DTYPE_t y):
     if x >= y:
         return x
     else:
         return y
+
 
 @cython.profile(False)
 cdef inline DTYPE_t dmin(DTYPE_t x, DTYPE_t y):
@@ -183,6 +188,7 @@ cdef inline DTYPE_t dmin(DTYPE_t x, DTYPE_t y):
     else:
         return y
 
+
 @cython.profile(False)
 cdef inline DTYPE_t dabs(DTYPE_t x):
     if x >= 0:
@@ -190,6 +196,10 @@ cdef inline DTYPE_t dabs(DTYPE_t x):
     else:
         return -x
 
+
+######################################################################
+# distance functions
+#
 @cython.cdivision(True)
 cdef DTYPE_t dist(DTYPE_t *x1, DTYPE_t *x2, ITYPE_t n, DTYPE_t p):
     cdef ITYPE_t i
@@ -213,8 +223,7 @@ cdef DTYPE_t dist(DTYPE_t *x1, DTYPE_t *x2, ITYPE_t n, DTYPE_t p):
         r = r ** (1. / p)
     return r
 
-# dist_p returns d^p
-# in order to recover the true distance, call dist_from_dist_p()
+
 @cython.cdivision(True)
 cdef DTYPE_t dist_p(DTYPE_t *x1, DTYPE_t *x2, ITYPE_t n, DTYPE_t p):
     cdef ITYPE_t i
@@ -236,6 +245,7 @@ cdef DTYPE_t dist_p(DTYPE_t *x1, DTYPE_t *x2, ITYPE_t n, DTYPE_t p):
             r += d ** p
     return r
 
+
 @cython.cdivision(True)
 cdef DTYPE_t dist_from_dist_p(DTYPE_t r, DTYPE_t p):
     if p == 2:
@@ -250,6 +260,7 @@ cdef DTYPE_t dist_from_dist_p(DTYPE_t r, DTYPE_t p):
 
 ######################################################################
 # NodeInfo struct
+#  used to keep track of node information.
 cdef struct NodeInfo:
     ITYPE_t idx_start
     ITYPE_t idx_end
@@ -257,8 +268,8 @@ cdef struct NodeInfo:
 
 
 ######################################################################
-# stack.  This is used to keep track of the stack in Node_query
-#
+# stack struct
+#  This is used to keep track of the recursion stack in Node_query
 cdef struct stack_item:
     DTYPE_t dist_LB
     ITYPE_t i_node
@@ -298,6 +309,7 @@ cdef inline void stack_push(stack* self, stack_item item):
     self.heap[self.n] = item
     self.n += 1
 
+
 @cython.profile(False)
 cdef inline stack_item stack_pop(stack* self):
     if self.n == 0:
@@ -305,6 +317,7 @@ cdef inline stack_item stack_pop(stack* self):
     
     self.n -= 1
     return self.heap[self.n]
+
     
 ######################################################################
 # estimate_num_nodes
@@ -331,39 +344,6 @@ cdef class BallTree:
     BallTree class
 
     implementation of BallTree using numpy arrays for picklability
-
-    Implementation Notes
-    --------------------
-    
-    Instead of dynamically allocating Node objects, this implementation
-    instead uses a pre-allocated numpy array with implicit linking.
-    Four arrays are used:
-        data : float, shape = (n_samples, n_features)
-            The input data array from which the tree is built
-
-        node_centroid_arr : float, shape = (n_nodes, n_features)
-            For node index i, the array has the following:
-                centroid = node_centroid_arr[i]
-
-        node_info_arr : int, shape = (n_nodes, 3)
-            For node index i, the array has the following:
-                idx_start = node_info_arr[i, 0]
-                idx_end = node_info_arr[i, 1]
-                is_leaf = node_info_arr[i, 2]
-
-        indices : int, shape = (n_samples,)
-            This array stores a list of indices to which the node arrays point
-            for a node with idx_start and idx_end, the indices of the points
-            in the node are found in indices[idx_start:idx_end]
-
-    The nodes are implicitly linked, in a way that is similar to that of the
-    heapsort algorithm.  Node i (zero-indexed) has children at indices
-    (2 * i + 1) and (2 * i + 2).  Node i has parent floor((i-1)/2).  Node 0
-    has no parent.
-
-    Because all necessary information is stored in these arrays, the object
-    can be pickled and unpickled with no loss of data (unlike the basic
-    implementation using pointers and dynamic allocation of nodes).
     """
     cdef np.ndarray data
     cdef np.ndarray idx_array
@@ -393,26 +373,21 @@ cdef class BallTree:
         self.node_centroid_arr = np.empty((n_nodes, n_features),
                                           dtype=DTYPE, order='C')
         self.node_radius_arr = np.empty(n_nodes, dtype=DTYPE)
-        self.node_info_arr = np.empty((n_nodes, 3),
-                                     dtype=ITYPE, order='C')
-
+        self.node_info_arr = np.empty(n_nodes * sizeof(NodeInfo),
+                                      dtype='c', order='C')
         self.build_tree_()
 
-
-    def query(self, X, ITYPE_t k, return_distance=True):
+    def query(self, X, n_neighbors, return_distance=True):
         X = np.asarray(X, dtype=DTYPE, order='C')
-        X = np.atleast_2d(X)
         assert X.shape[-1] == self.data.shape[1]
-        assert k <= self.data.shape[0]
+        assert n_neighbors <= self.data.shape[0]
 
         # almost-flatten x for iteration
         orig_shape = X.shape
         X = X.reshape((-1, X.shape[-1]))
-
         X = np.asarray(X, dtype=DTYPE, order='C')
 
-        cdef ITYPE_t i
-        cdef ITYPE_t N
+        cdef ITYPE_t i, k = n_neighbors
         cdef np.ndarray distances = np.empty((X.shape[0], k), dtype=DTYPE)
         cdef np.ndarray idx_array = np.empty((X.shape[0], k), dtype=ITYPE)
         cdef np.ndarray Xi
@@ -422,7 +397,7 @@ cdef class BallTree:
         cdef DTYPE_t* dist_ptr = <DTYPE_t*> distances.data
         cdef ITYPE_t* idx_ptr = <ITYPE_t*> idx_array.data
 
-        #FIXME: better estimate of stack size
+        #FIXME: get a better estimate of stack size
         cdef stack node_stack
         stack_create(&node_stack, self.data.shape[0])
 
@@ -451,7 +426,6 @@ cdef class BallTree:
         cdef DTYPE_t* node_radius_arr = <DTYPE_t*> self.node_radius_arr.data
         cdef NodeInfo* node_info_arr = <NodeInfo*> self.node_info_arr.data
         
-        cdef ITYPE_t leaf_size = self.leaf_size
         cdef ITYPE_t p = self.p
         cdef ITYPE_t n_samples = self.data.shape[0]
         cdef ITYPE_t n_features = self.data.shape[1]
@@ -489,11 +463,10 @@ cdef class BallTree:
         node_radius_arr[0] = dist_from_dist_p(radius, p)
 
         # check if this is a leaf
-        if n_points <= leaf_size:
+        if n_points <= self.leaf_size:
             node_info.is_leaf = 1
 
         else:
-            # not a leaf
             node_info.is_leaf = 0
 
             # find dimension with largest spread
@@ -566,7 +539,7 @@ cdef class BallTree:
                                          n_features, p))
                 node_radius_arr[i_node] = dist_from_dist_p(radius, p)
 
-                if n_points <= leaf_size:
+                if n_points <= self.leaf_size:
                     node_info.is_leaf = 1
 
                 else:
@@ -622,8 +595,6 @@ cdef class BallTree:
 
             #------------------------------------------------------------
             # Case 1: query point is outside node radius
-            #if dist_LB >= max_heap_largest(near_set_dist):
-            #    continue
             if dist_LB >= pqueue_largest(near_set_dist, k):
                 continue
 
@@ -635,9 +606,6 @@ cdef class BallTree:
                                    data + n_features * idx_array[i],
                                    n_features, p)
 
-                    #if dist_pt < max_heap_largest(near_set_dist):
-                    #    max_heap_insert(dist_pt, idx_array[i],
-                    #                    near_set_dist, near_set_indx, k)
                     if dist_pt < pqueue_largest(near_set_dist, k):
                         pqueue_insert(dist_pt, idx_array[i],
                                       near_set_dist, near_set_indx, k)
@@ -684,6 +652,7 @@ cdef inline void copy_array(DTYPE_t* x, DTYPE_t* y, ITYPE_t n):
     cdef ITYPE_t i
     for i from 0 <= i < n:
         x[i] = y[i]
+
 
 @cython.cdivision(True)
 cdef void compute_centroid(DTYPE_t* centroid,
@@ -770,7 +739,8 @@ cdef void partition_indices(DTYPE_t* data,
 
 
 ######################################################################
-
+# calc_dist_LB
+#  This calculates the lower-bound distance between a point and a node
 @cython.profile(False)
 cdef inline DTYPE_t calc_dist_LB(DTYPE_t* pt,
                                  DTYPE_t* centroid,
@@ -780,75 +750,9 @@ cdef inline DTYPE_t calc_dist_LB(DTYPE_t* pt,
     return dmax(0, (dist(pt, centroid, n_features, p)
                     - radius))
 
-
-
-
-
-#----------------------------------------------------------------------
-# max_heap functions
-#
-# This is a basic implementation of a fixed-size binary max-heap.
-# It is used to keep track of the k nearest neighbors in a query.
-#
-# The root node is at heap[0].  The two child nodes of node i are at
-# (2 * i + 1) and (2 * i + 2).
-# The parent node of node i is node floor((i-1)/2).  Node 0 has no parent.
-#
-# An empty heap should be full of infinities
-#
-@cython.profile(False)
-cdef inline DTYPE_t max_heap_largest(DTYPE_t* heap):
-    return heap[0]
-
-
-cdef void max_heap_insert(DTYPE_t val, ITYPE_t i_val,
-                          DTYPE_t* heap,
-                          ITYPE_t* idx_array,
-                          ITYPE_t heap_size):
-    cdef ITYPE_t i, ic1, ic2, i_tmp
-    cdef DTYPE_t d_tmp
-
-    # check if val should be in heap
-    if val > heap[0]:
-        return
-    
-    # insert val at position zero
-    heap[0] = val
-    idx_array[0] = i_val
-
-    i = 0
-    while 1:
-        ic1 = 2 * i + 1
-        ic2 = ic1 + 1
-
-        if ic1 >= heap_size:
-            break
-        elif ic2 >= heap_size:
-            if heap[ic1] > val:
-                i_swap = ic1
-            else:
-                break
-        elif heap[ic1] >= heap[ic2]:
-            if val < heap[ic1]:
-                i_swap = ic1
-            else:
-                break
-        else:
-            if val < heap[ic2]:
-                i_swap = ic2
-            else:
-                break
-
-        heap[i] = heap[i_swap]
-        idx_array[i] = idx_array[i_swap]
-    
-        i = i_swap
-    
-    heap[i] = val
-    idx_array[i] = i_val
-
-#------------------------------------------------------------
-# alternative: priority queue
+######################################################################
+# priority queue
+#  This is used to keep track of the neighbors as they are found.
 
 @cython.profile(False)
 cdef inline DTYPE_t pqueue_largest(DTYPE_t* queue, ITYPE_t queue_size):
@@ -860,7 +764,7 @@ cdef inline void pqueue_insert(DTYPE_t val, ITYPE_t i_val,
     cdef ITYPE_t i_lower = 0
     cdef ITYPE_t i_upper = queue_size - 1
     cdef ITYPE_t i_mid
-    cdef int i #unsigned leads to problems in the for-loop
+    cdef ITYPE_t i
     
     if val >= queue[i_upper]:
         return
@@ -883,12 +787,9 @@ cdef inline void pqueue_insert(DTYPE_t val, ITYPE_t i_val,
             else:
                 i_upper = i_mid
 
-    for i from queue_size - 1 > i >= i_mid:
-        if i > queue_size:
-            break
-        queue[i + 1] = queue[i]
-        idx_array[i + 1] = idx_array[i]
+    for i from queue_size > i > i_mid:
+        queue[i] = queue[i - 1]
+        idx_array[i] = idx_array[i - 1]
 
     queue[i_mid] = val
     idx_array[i_mid] = i_val
-            
