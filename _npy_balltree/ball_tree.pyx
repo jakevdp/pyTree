@@ -11,9 +11,9 @@ Description
 -----------
 A ball tree is a data object which speeds up nearest neighbor
 searches in high dimensions (see scikit-learn neighbors module
-documentation for an overview of neighbor trees). There are many 
-types of ball trees.  This package provides a basic implementation 
-in cython.  
+documentation for an overview of neighbor trees). There are many
+types of ball trees.  This package provides a basic implementation
+in cython.
 
 Examples
 --------
@@ -24,7 +24,7 @@ Implementation Notes
 A ball tree can be thought of as a collection of nodes.  Each node
 stores a centroid, a radius, and the pointers to two child nodes.
 
-* centroid : the centroid of a node is the mean of all the locations 
+* centroid : the centroid of a node is the mean of all the locations
     of points within the node
 * radius : the radius of a node is the distance from the centroid
     to the furthest point in the node.
@@ -65,9 +65,9 @@ pseudo-code to show the structure of the main functionality
             radius = compute_radius(centroid, data)
 
             # Divide the data into two approximately equal sets.
-            # This is often done by splitting along a single dimension.  
+            # This is often done by splitting along a single dimension.
             data1, data2 = divide(data)
-            
+
             if number_of_points(data1) > 0:
                 child1.construct(data1)
 
@@ -81,7 +81,7 @@ pseudo-code to show the structure of the main functionality
                 min_distance = 0
             else:
                 min_distance = d - radius
-            
+
             if min_distance > max_distance_in(neighbors_heap):
                 # all these points are too far away.  cut off the search here
                 return
@@ -100,10 +100,10 @@ pseudo-code to show the structure of the main functionality
         def query(point, num_neighbors):
             neighbors_heap = empty_heap_of_size(num_neighbors)
             root_node.query(point, neighbors_heap)
-                
+
 This certainly is not a complete description, but should give the basic idea
 of the form of the algorithm.  The implementation below is much faster than
-anything mirroring the pseudo-code above, but for that reason is much more 
+anything mirroring the pseudo-code above, but for that reason is much more
 opaque to understanding.  Here's the basic idea.
 
 The BallTree information is stored using a combination of
@@ -140,9 +140,9 @@ parent is found at index `floor((i - 1) / 2)`.  The root node has no parent.
 With this data structure in place, we can implement the functionality of the
 BallTree pseudo-code spelled-out above in a much more efficient manner.
 Most of the data passing done in this code uses raw data  pointers.
-Using numpy arrays would be preferable for safety, but the 
-overhead of array slicing and sub-array construction leads to execution 
-time which is several orders of magnitude slower than the current 
+Using numpy arrays would be preferable for safety, but the
+overhead of array slicing and sub-array construction leads to execution
+time which is several orders of magnitude slower than the current
 implementation.
 """
 
@@ -165,6 +165,7 @@ ctypedef np.uint32_t ITYPE_t
 
 # infinity
 cdef DTYPE_t infinity = np.inf
+
 
 ######################################################################
 # utility functions: fast max, min, and absolute value
@@ -314,6 +315,7 @@ cdef inline void stack_resize(stack* self, int new_size):
     self.heap = <stack_item*>stdlib.realloc(<void*> self.heap,
                                             new_size * sizeof(stack_item))
 
+
 @cython.profile(False)
 cdef inline void stack_push(stack* self, stack_item item):
     if self.n >= self.size:
@@ -327,7 +329,7 @@ cdef inline void stack_push(stack* self, stack_item item):
 cdef inline stack_item stack_pop(stack* self):
     if self.n == 0:
         raise ValueError("popping empty stack")
-    
+
     self.n -= 1
     return self.heap[self.n]
 
@@ -369,7 +371,7 @@ cdef class BallTree:
     cdef DTYPE_t p
     cdef ITYPE_t leaf_size
     cdef ITYPE_t n_nodes
-    
+
     def __init__(self, X, ITYPE_t leaf_size=20, DTYPE_t p=2):
         self.data = np.asarray(X, dtype=DTYPE)
         assert self.data.ndim == 2
@@ -398,8 +400,7 @@ cdef class BallTree:
         # This should never be a problem, but it's better to have
         # this error than a Segmentation fault!
         if not self.enough_space_allocated_():
-            raise ValueError, "Fatal: not enough BallTree space allocated"
-
+            raise ValueError("Fatal: not enough BallTree space allocated")
 
     ######################################################################
     # estimate_num_nodes
@@ -412,8 +413,8 @@ cdef class BallTree:
     #  (N-1)/2 in the second child (with index 2*i+2)
     #
     #  For leaf_size ~ 20, the estimate leads to very little wasted space.
-    #  For leaf_size near 1, and for a near integer log2(n_samples / leaf_size),
-    #  the wasted space can be more significant.
+    #  For leaf_size near 1, and a nearly integer value of
+    #  log2(n_samples / leaf_size), the wasted space can be more significant.
     @cython.cdivision(True)
     cdef inline ITYPE_t estimate_num_nodes(BallTree self):
         cdef ITYPE_t n_samples = self.data.shape[0]
@@ -489,9 +490,9 @@ cdef class BallTree:
                             dist_ptr, idx_ptr, &node_stack)
             dist_ptr += k
             idx_ptr += k
-        
+
         stack_destroy(&node_stack)
-            
+
         # deflatten results
         if return_distance:
             return (distances.reshape((orig_shape[:-1]) + (k,)),
@@ -565,7 +566,7 @@ cdef class BallTree:
         orig_shape = X.shape
         X = X.reshape((-1, X.shape[-1]))
         r = r.reshape(-1)
-        
+
         #FIXME: use a better estimate of stack size
         cdef stack node_stack
         stack_create(&node_stack, self.data.shape[0])
@@ -601,7 +602,6 @@ cdef class BallTree:
                     &node_stack)
                 idx_array[pt_idx] = idx_array_i[:count_i].copy()
                 distances[pt_idx] = distances_i[:count_i].copy()
-            
 
         stack_destroy(&node_stack)
 
@@ -613,14 +613,14 @@ cdef class BallTree:
                     distances.reshape(orig_shape[:-1]))
         else:
             return idx_array.reshape(orig_shape[:-1])
-        
+
     @cython.cdivision(True)
     cdef void build_tree_(BallTree self):
         cdef DTYPE_t* data = <DTYPE_t*> self.data.data
         cdef ITYPE_t* idx_array = <ITYPE_t*> self.idx_array.data
-        cdef DTYPE_t* node_centroid_arr = <DTYPE_t*> self.node_centroid_arr.data
+        cdef DTYPE_t* node_centroid_arr = <DTYPE_t*>self.node_centroid_arr.data
         cdef NodeInfo* node_info_arr = <NodeInfo*> self.node_info_arr.data
-        
+
         cdef DTYPE_t p = self.p
         cdef ITYPE_t n_samples = self.data.shape[0]
         cdef ITYPE_t n_features = self.data.shape[1]
@@ -647,7 +647,7 @@ cdef class BallTree:
         # determine Node radius
         radius = 0
         for i from node_info.idx_start <= i < node_info.idx_end:
-            radius = dmax(radius, 
+            radius = dmax(radius,
                           dist_p(centroid, data + n_features * idx_array[i],
                                  n_features, p))
         node_info.radius = dist_from_dist_p(radius, p)
@@ -701,11 +701,11 @@ cdef class BallTree:
             n_points = idx_end - idx_start
 
             if n_points == 0:
-                raise ValueError, "zero-sized node"
+                raise ValueError("zero-sized node")
 
             elif n_points == 1:
                 #copy this point to centroid
-                copy_array(centroid, 
+                copy_array(centroid,
                            data + idx_array[idx_start] * n_features,
                            n_features)
 
@@ -723,7 +723,7 @@ cdef class BallTree:
                 # determine Node radius
                 radius = 0
                 for i from idx_start <= i < idx_end:
-                    radius = dmax(radius, 
+                    radius = dmax(radius,
                                   dist_p(centroid,
                                          data + n_features * idx_array[i],
                                          n_features, p))
@@ -748,7 +748,6 @@ cdef class BallTree:
                                       n_features,
                                       n_points)
 
-
     cdef void query_one_(BallTree self,
                          DTYPE_t* pt,
                          ITYPE_t k,
@@ -757,13 +756,13 @@ cdef class BallTree:
                          stack* node_stack):
         cdef DTYPE_t* data = <DTYPE_t*> self.data.data
         cdef ITYPE_t* idx_array = <ITYPE_t*> self.idx_array.data
-        cdef DTYPE_t* node_centroid_arr = <DTYPE_t*> self.node_centroid_arr.data
+        cdef DTYPE_t* node_centroid_arr = <DTYPE_t*>self.node_centroid_arr.data
         cdef NodeInfo* node_info_arr = <NodeInfo*> self.node_info_arr.data
         cdef NodeInfo* node_info = node_info_arr
 
         cdef DTYPE_t p = self.p
         cdef ITYPE_t n_features = self.data.shape[1]
-        
+
         cdef DTYPE_t dist_pt, dist_p_LB, dist_p_LB_1, dist_p_LB_2
         cdef ITYPE_t i, i1, i2, i_node
 
@@ -775,7 +774,7 @@ cdef class BallTree:
                                         n_features, p)
         stack_push(node_stack, item)
 
-        while(node_stack.n > 0):        
+        while(node_stack.n > 0):
             item = stack_pop(node_stack)
             i_node = item.i_node
             dist_p_LB = item.dist_p_LB
@@ -814,7 +813,6 @@ cdef class BallTree:
                                              node_info_arr[i2].radius,
                                              n_features, p)
 
-
                 # append children to stack: last-in-first-out
                 if dist_p_LB_2 <= dist_p_LB_1:
                     item.i_node = i1
@@ -833,7 +831,7 @@ cdef class BallTree:
                     item.i_node = i1
                     item.dist_p_LB = dist_p_LB_1
                     stack_push(node_stack, item)
-        
+
         for i from 0 <= i < k:
             near_set_dist[i] = dist_from_dist_p(near_set_dist[i], p)
 
@@ -842,7 +840,7 @@ cdef class BallTree:
                                      stack* node_stack):
         cdef DTYPE_t* data = <DTYPE_t*> self.data.data
         cdef ITYPE_t* idx_array = <ITYPE_t*> self.idx_array.data
-        cdef DTYPE_t* node_centroid_arr = <DTYPE_t*> self.node_centroid_arr.data
+        cdef DTYPE_t* node_centroid_arr = <DTYPE_t*>self.node_centroid_arr.data
         cdef NodeInfo* node_info_arr = <NodeInfo*> self.node_info_arr.data
         cdef NodeInfo* node_info = node_info_arr
 
@@ -858,7 +856,7 @@ cdef class BallTree:
         item.i_node = 0
         stack_push(node_stack, item)
 
-        while(node_stack.n > 0):        
+        while(node_stack.n > 0):
             item = stack_pop(node_stack)
             i_node = item.i_node
             node_info = node_info_arr + i_node
@@ -879,7 +877,7 @@ cdef class BallTree:
                 count += (node_info.idx_end - node_info.idx_start)
 
             #------------------------------------------------------------
-            # Case 3: this is a leaf node.  Go through all points to 
+            # Case 3: this is a leaf node.  Go through all points to
             #         determine if they fall within radius
             elif node_info.is_leaf:
                 for i from node_info.idx_start <= i < node_info.idx_end:
@@ -906,7 +904,7 @@ cdef class BallTree:
                                         stack* node_stack):
         cdef DTYPE_t* data = <DTYPE_t*> self.data.data
         cdef ITYPE_t* idx_array = <ITYPE_t*> self.idx_array.data
-        cdef DTYPE_t* node_centroid_arr = <DTYPE_t*> self.node_centroid_arr.data
+        cdef DTYPE_t* node_centroid_arr = <DTYPE_t*>self.node_centroid_arr.data
         cdef NodeInfo* node_info_arr = <NodeInfo*> self.node_info_arr.data
         cdef NodeInfo* node_info = node_info_arr
 
@@ -922,7 +920,7 @@ cdef class BallTree:
         item.i_node = 0
         stack_push(node_stack, item)
 
-        while(node_stack.n > 0):        
+        while(node_stack.n > 0):
             item = stack_pop(node_stack)
             i_node = item.i_node
             node_info = node_info_arr + i_node
@@ -945,7 +943,7 @@ cdef class BallTree:
                     idx_i += 1
 
             #------------------------------------------------------------
-            # Case 3: this is a leaf node.  Go through all points to 
+            # Case 3: this is a leaf node.  Go through all points to
             #         determine if they fall within radius
             elif node_info.is_leaf:
                 for i from node_info.idx_start <= i < node_info.idx_end:
@@ -974,7 +972,7 @@ cdef class BallTree:
                                          stack* node_stack):
         cdef DTYPE_t* data = <DTYPE_t*> self.data.data
         cdef ITYPE_t* idx_array = <ITYPE_t*> self.idx_array.data
-        cdef DTYPE_t* node_centroid_arr = <DTYPE_t*> self.node_centroid_arr.data
+        cdef DTYPE_t* node_centroid_arr = <DTYPE_t*>self.node_centroid_arr.data
         cdef NodeInfo* node_info_arr = <NodeInfo*> self.node_info_arr.data
         cdef NodeInfo* node_info = node_info_arr
 
@@ -990,7 +988,7 @@ cdef class BallTree:
         item.i_node = 0
         stack_push(node_stack, item)
 
-        while(node_stack.n > 0):        
+        while(node_stack.n > 0):
             item = stack_pop(node_stack)
             i_node = item.i_node
             node_info = node_info_arr + i_node
@@ -1017,7 +1015,7 @@ cdef class BallTree:
                     idx_i += 1
 
             #------------------------------------------------------------
-            # Case 3: this is a leaf node.  Go through all points to 
+            # Case 3: this is a leaf node.  Go through all points to
             #         determine if they fall within radius
             elif node_info.is_leaf:
                 for i from node_info.idx_start <= i < node_info.idx_end:
@@ -1039,7 +1037,7 @@ cdef class BallTree:
                 stack_push(node_stack, item)
 
         return idx_i
-                    
+
 
 @cython.profile(False)
 cdef inline void copy_array(DTYPE_t* x, DTYPE_t* y, ITYPE_t n):
@@ -1060,7 +1058,7 @@ cdef void compute_centroid(DTYPE_t* centroid,
     # node_indices = idx_array + idx_start
     cdef DTYPE_t *this_pt
     cdef ITYPE_t i, j
-    
+
     for j from 0 <= j < n_features:
         centroid[j] = 0
 
@@ -1115,11 +1113,11 @@ cdef void partition_indices(DTYPE_t* data,
     cdef DTYPE_t d1, d2
     left = 0
     right = n_points - 1
-    
+
     while True:
         midindex = left
         for i from left <= i < right:
-            d1 = data[node_indices[i] * n_features + split_dim] 
+            d1 = data[node_indices[i] * n_features + split_dim]
             d2 = data[node_indices[right] * n_features + split_dim]
             if d1 < d2:
                 swap(node_indices, i, midindex)
@@ -1146,6 +1144,7 @@ cdef inline DTYPE_t calc_dist_LB(DTYPE_t* pt,
     return dmax(0, (dist(pt, centroid, n_features, p)
                     - radius))
 
+
 @cython.profile(False)
 cdef inline DTYPE_t calc_dist_p_LB(DTYPE_t* pt,
                                    DTYPE_t* centroid,
@@ -1155,10 +1154,10 @@ cdef inline DTYPE_t calc_dist_p_LB(DTYPE_t* pt,
     return dist_p_from_dist(dmax(0, (dist(pt, centroid, n_features, p)
                                      - radius)), p)
 
+
 ######################################################################
 # priority queue
 #  This is used to keep track of the neighbors as they are found.
-
 @cython.profile(False)
 cdef inline DTYPE_t pqueue_largest(DTYPE_t* queue, ITYPE_t queue_size):
     return queue[queue_size - 1]
@@ -1170,7 +1169,7 @@ cdef inline void pqueue_insert(DTYPE_t val, ITYPE_t i_val,
     cdef ITYPE_t i_upper = queue_size - 1
     cdef ITYPE_t i_mid
     cdef ITYPE_t i
-    
+
     if val >= queue[i_upper]:
         return
     elif val <= queue[i_lower]:
