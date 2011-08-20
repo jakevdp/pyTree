@@ -122,12 +122,12 @@ expected number of nodes `n_nodes`, an allocates the following arrays:
     For a node of index `i_node`, the node centroid is stored at
     `node_float_arr[i_node, :n_features]` and the node radius is stored at
     `node_float_arr[n_features]`.
-* `node_int_arr` : an integer array of shape (n_nodes, 3)
+* `node_info_arr` : an integer array of shape (n_nodes, 3)
     This stores the integer information associated with each node.  For
     a node of index `i_node`, the following variables are stored:
-    - `idx_start = node_int_arr[i_node, 0]`
-    - `idx_end = node_int_arr[i_node, 1]`
-    - `is_leaf = node_int_arr[i_node, 2]`
+    - `idx_start = node_info_arr[i_node, 0]`
+    - `idx_end = node_info_arr[i_node, 1]`
+    - `is_leaf = node_info_arr[i_node, 2]`
     `idx_start` and `idx_end` point to locations in `idx_array` that reference
     the data in this node.  That is, the points within the current node are
     given by `data[idx_array[idx_start:idx_end]]`.
@@ -249,6 +249,14 @@ cdef DTYPE_t dist_from_dist_p(DTYPE_t r, DTYPE_t p):
 
 
 ######################################################################
+# NodeInfo struct
+cdef struct NodeInfo:
+    ITYPE_t idx_start
+    ITYPE_t idx_end
+    ITYPE_t is_leaf
+
+
+######################################################################
 # stack.  This is used to keep track of the stack in Node_query
 #
 cdef struct stack_item:
@@ -338,11 +346,11 @@ cdef class BallTree:
                 centroid = node_float_arr[i, :n_features]
                 radius = node_float_arr[i, n_features]
 
-        node_int_arr : int, shape = (n_nodes, 3)
+        node_info_arr : int, shape = (n_nodes, 3)
             For node index i, the array has the following:
-                idx_start = node_int_arr[i, 0]
-                idx_end = node_int_arr[i, 1]
-                is_leaf = node_int_arr[i, 2]
+                idx_start = node_info_arr[i, 0]
+                idx_end = node_info_arr[i, 1]
+                is_leaf = node_info_arr[i, 2]
 
         indices : int, shape = (n_samples,)
             This array stores a list of indices to which the node arrays point
@@ -361,7 +369,7 @@ cdef class BallTree:
     cdef np.ndarray data
     cdef np.ndarray idx_array
     cdef np.ndarray node_float_arr
-    cdef np.ndarray node_int_arr
+    cdef np.ndarray node_info_arr
     cdef ITYPE_t p
     cdef ITYPE_t leaf_size
     
@@ -384,7 +392,7 @@ cdef class BallTree:
     
         self.node_float_arr = np.empty((n_nodes, n_features + 1),
                                        dtype=DTYPE, order='C')
-        self.node_int_arr = np.empty((n_nodes, 3),
+        self.node_info_arr = np.empty((n_nodes, 3),
                                      dtype=ITYPE, order='C')
 
         self.build_tree_()
@@ -439,14 +447,13 @@ cdef class BallTree:
         cdef DTYPE_t* data = <DTYPE_t*> self.data.data,
         cdef ITYPE_t* idx_array = <ITYPE_t*> self.idx_array.data,
         cdef DTYPE_t* node_float_arr = <DTYPE_t*> self.node_float_arr.data,
-        cdef ITYPE_t* node_int_arr = <ITYPE_t*> self.node_int_arr.data
+        cdef NodeInfo* node_info_arr = <NodeInfo*> self.node_info_arr.data
         
         cdef ITYPE_t leaf_size = self.leaf_size
         cdef ITYPE_t p = self.p
         cdef ITYPE_t n_samples = self.data.shape[0]
         cdef ITYPE_t n_features = self.data.shape[1]
-        cdef ITYPE_t n_nodes = self.node_int_arr.shape[0]
-        
+        cdef ITYPE_t n_nodes = self.node_info_arr.shape[0]
 
         cdef ITYPE_t idx_start = 0
         cdef ITYPE_t idx_end = n_samples
@@ -455,8 +462,8 @@ cdef class BallTree:
         cdef ITYPE_t i, i_node, i_parent
 
         cdef DTYPE_t* centroid = node_float_arr
-        cdef ITYPE_t* node_info = node_int_arr
-        cdef ITYPE_t* parent_info
+        cdef NodeInfo* node_info = node_info_arr
+        cdef NodeInfo* parent_info
         cdef DTYPE_t* point
 
         if n_points == 0:
@@ -464,8 +471,8 @@ cdef class BallTree:
 
         #------------------------------------------------------------
         # take care of the head node
-        node_int_arr[0] = idx_start
-        node_int_arr[1] = idx_end
+        node_info.idx_start = idx_start
+        node_info.idx_end = idx_end
 
         # determine Node centroid
         compute_centroid(centroid, data, idx_array,
@@ -481,11 +488,11 @@ cdef class BallTree:
 
         # check if this is a leaf
         if n_points <= leaf_size:
-            node_info[2] = 1
+            node_info.is_leaf = 1
 
         else:
             # not a leaf
-            node_info[2] = 0
+            node_info.is_leaf = 0
 
             # find dimension with largest spread
             i_max = find_split_dim(data, idx_array + idx_start,
@@ -503,28 +510,28 @@ cdef class BallTree:
         # cycle through all child nodes
         for i_node from 1 <= i_node < n_nodes:
             i_parent = (i_node - 1) / 2
-            parent_info = node_int_arr + 3 * i_parent
+            parent_info = node_info_arr + i_parent
 
-            node_info = node_int_arr + 3 * i_node
-            node_info[2] = 1
+            node_info = node_info_arr + i_node
+            node_info.is_leaf = 1
 
             # if parent is a leaf then we stop here
-            if parent_info[2]:
+            if parent_info.is_leaf:
                 continue
 
             centroid = node_float_arr + i_node * (n_features + 1)
 
             # find indices for this node
-            idx_start = parent_info[0]
-            idx_end = parent_info[1]
+            idx_start = parent_info.idx_start
+            idx_end = parent_info.idx_end
 
             if i_node % 2 == 1:
                 idx_start = (idx_start + idx_end) / 2
             else:
                 idx_end = (idx_start + idx_end) / 2
 
-            node_info[0] = idx_start
-            node_info[1] = idx_end
+            node_info.idx_start = idx_start
+            node_info.idx_end = idx_end
 
             n_points = idx_end - idx_start
 
@@ -541,7 +548,7 @@ cdef class BallTree:
                 centroid[n_features] = 0
 
                 #is a leaf
-                node_info[2] = 1
+                node_info.is_leaf = 1
 
             else:
                 # determine Node centroid
@@ -558,11 +565,11 @@ cdef class BallTree:
                 centroid[n_features] = dist_from_dist_p(radius, p)
 
                 if n_points <= leaf_size:
-                    node_info[2] = 1
+                    node_info.is_leaf = 1
 
                 else:
                     # not a leaf
-                    node_info[2] = 0
+                    node_info.is_leaf = 0
 
                     # find dimension with largest spread
                     i_max = find_split_dim(data, idx_array + idx_start,
@@ -576,6 +583,7 @@ cdef class BallTree:
                                       n_features,
                                       n_points)
 
+
     cdef void query_one_(BallTree self,
                          DTYPE_t* pt,
                          ITYPE_t k,
@@ -585,15 +593,14 @@ cdef class BallTree:
         cdef DTYPE_t* data = <DTYPE_t*> self.data.data,
         cdef ITYPE_t* idx_array = <ITYPE_t*> self.idx_array.data,
         cdef DTYPE_t* node_float_arr = <DTYPE_t*> self.node_float_arr.data,
-        cdef ITYPE_t* node_int_arr = <ITYPE_t*> self.node_int_arr.data
+        cdef NodeInfo* node_info_arr = <NodeInfo*> self.node_info_arr.data
+        cdef NodeInfo* node_info = node_info_arr
 
         cdef ITYPE_t p = self.p
         cdef ITYPE_t n_features = self.data.shape[1]
         
         cdef DTYPE_t dist_pt, dist_LB, dist_LB_1, dist_LB_2
-        cdef ITYPE_t i, i1, i2, i_node, idx_start, idx_end
-
-        cdef ITYPE_t* node_info = node_int_arr
+        cdef ITYPE_t i, i1, i2, i_node
 
         cdef stack_item item
 
@@ -607,10 +614,7 @@ cdef class BallTree:
             i_node = item.i_node
             dist_LB = item.dist_LB
 
-            node_info = node_int_arr + i_node * 3
-
-            idx_start = node_info[0]
-            idx_end = node_info[1]
+            node_info = node_info_arr + i_node
 
             #------------------------------------------------------------
             # Case 1: query point is outside node radius
@@ -621,8 +625,8 @@ cdef class BallTree:
 
             #------------------------------------------------------------
             # Case 2: this is a leaf node.  Update set of nearby points
-            elif node_info[2]:
-                for i from idx_start <= i < idx_end:
+            elif node_info.is_leaf:
+                for i from node_info.idx_start <= i < node_info.idx_end:
                     dist_pt = dist(pt,
                                    data + n_features * idx_array[i],
                                    n_features, p)
