@@ -387,6 +387,7 @@ cdef class BallTree:
         self.idx_array = np.arange(n_samples, dtype=ITYPE)
 
         self.node_centroid_arr = np.empty((self.n_nodes, n_features),
+                                          dtype=DTYPE, order='C')
 
         self.node_info_arr = np.empty(self.n_nodes * sizeof(NodeInfo),
                                       dtype='c', order='C')
