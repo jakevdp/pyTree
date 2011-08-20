@@ -121,7 +121,6 @@ expected number of nodes `n_nodes`, an allocates the following arrays:
     to the rows in data.
 * `node_centroid_arr` : a float array of shape `(n_nodes, n_features)`
     This stores the floating-point information associated with each node.
-* `node_radius_arr` : a float array of length `n_nodes` storing the radius
     of each node.
 * `node_info_arr` : an integer array of shape (n_nodes, 3)
     This stores the integer information associated with each node.  For
@@ -258,13 +257,29 @@ cdef DTYPE_t dist_from_dist_p(DTYPE_t r, DTYPE_t p):
         return r ** (1. / p)
 
 
+@cython.cdivision(True)
+cdef DTYPE_t dist_p_from_dist(DTYPE_t r, DTYPE_t p):
+    if p == 2:
+        return r ** 2
+    elif p == infinity:
+        return r
+    elif p == 1:
+        return r
+    else:
+        return r ** p
+
+
 ######################################################################
 # NodeInfo struct
 #  used to keep track of node information.
+#  there is also a centroid for each node: this is kept in a separate
+#  array for efficiency.  This is a hybrid of the "Array of Structures"
+#  and "Structure of Arrays" programming style.
 cdef struct NodeInfo:
     ITYPE_t idx_start
     ITYPE_t idx_end
     ITYPE_t is_leaf
+    DTYPE_t radius
 
 
 ######################################################################
@@ -348,10 +363,10 @@ cdef class BallTree:
     cdef np.ndarray data
     cdef np.ndarray idx_array
     cdef np.ndarray node_centroid_arr
-    cdef np.ndarray node_radius_arr
     cdef np.ndarray node_info_arr
     cdef ITYPE_t p
     cdef ITYPE_t leaf_size
+    cdef ITYPE_t n_nodes
     
     def __init__(self, X, ITYPE_t leaf_size=20, ITYPE_t p=2):
         self.data = np.asarray(X, dtype=DTYPE)
@@ -366,21 +381,20 @@ cdef class BallTree:
         cdef ITYPE_t n_samples = self.data.shape[0]
         cdef ITYPE_t n_features = self.data.shape[1]
         
-        cdef ITYPE_t n_nodes = estimate_num_nodes(n_samples, self.leaf_size)
+        self.n_nodes = estimate_num_nodes(n_samples, self.leaf_size)
 
         self.idx_array = np.arange(n_samples, dtype=ITYPE)
     
-        self.node_centroid_arr = np.empty((n_nodes, n_features),
+        self.node_centroid_arr = np.empty((self.n_nodes, n_features),
                                           dtype=DTYPE, order='C')
-        self.node_radius_arr = np.empty(n_nodes, dtype=DTYPE)
-        self.node_info_arr = np.empty(n_nodes * sizeof(NodeInfo),
+        self.node_info_arr = np.empty(self.n_nodes * sizeof(NodeInfo),
                                       dtype='c', order='C')
         self.build_tree_()
 
         # Check that our estimate for the number of nodes is okay.
         # This should never be a problem, but it's better to have
         # this error than a Segmentation fault!
-        if not self.check_tree_():
+        if not self.enough_space_allocated_():
             raise ValueError, "Fatal: not enough BallTree space allocated"
 
     def query(self, X, n_neighbors, return_distance=True):
@@ -423,14 +437,13 @@ cdef class BallTree:
         else:
             return idx_array.reshape((orig_shape[:-1]) + (k,))
 
-    cdef ITYPE_t check_tree_(BallTree self):
-        cdef ITYPE_t n_nodes = self.node_radius_arr.shape[0]
+    @cython.cdivision(True)
+    cdef ITYPE_t enough_space_allocated_(BallTree self):
         cdef ITYPE_t i
-        cdef NodeInfo* node_info
-
-        for i from (n_nodes - 1) / 2 <= i < n_nodes:
-            node_info = <NodeInfo*>self.node_info_arr.data + i
-            if not node_info.is_leaf:
+        cdef NodeInfo* node_info = <NodeInfo*>self.node_info_arr.data + i
+        # all nodes in the second half of the tree should be leaves.
+        for i from (self.n_nodes - 1) / 2 <= i < self.n_nodes:
+            if not node_info[i].is_leaf:
                 return 0
         return 1
         
@@ -439,13 +452,11 @@ cdef class BallTree:
         cdef DTYPE_t* data = <DTYPE_t*> self.data.data
         cdef ITYPE_t* idx_array = <ITYPE_t*> self.idx_array.data
         cdef DTYPE_t* node_centroid_arr = <DTYPE_t*> self.node_centroid_arr.data
-        cdef DTYPE_t* node_radius_arr = <DTYPE_t*> self.node_radius_arr.data
         cdef NodeInfo* node_info_arr = <NodeInfo*> self.node_info_arr.data
         
         cdef ITYPE_t p = self.p
         cdef ITYPE_t n_samples = self.data.shape[0]
         cdef ITYPE_t n_features = self.data.shape[1]
-        cdef ITYPE_t n_nodes = self.node_radius_arr.shape[0]
 
         cdef ITYPE_t idx_start, idx_end, n_points
         cdef DTYPE_t radius
@@ -472,7 +483,7 @@ cdef class BallTree:
             radius = dmax(radius, 
                           dist_p(centroid, data + n_features * idx_array[i],
                                  n_features, p))
-        node_radius_arr[0] = dist_from_dist_p(radius, p)
+        node_info.radius = dist_from_dist_p(radius, p)
 
         # check if this is a leaf
         if n_points <= self.leaf_size:
@@ -495,7 +506,7 @@ cdef class BallTree:
 
         #------------------------------------------------------------
         # cycle through all child nodes
-        for i_node from 1 <= i_node < n_nodes:
+        for i_node from 1 <= i_node < self.n_nodes:
             i_parent = (i_node - 1) / 2
             parent_info = node_info_arr + i_parent
 
@@ -532,7 +543,7 @@ cdef class BallTree:
                            n_features)
 
                 #store radius in array
-                node_radius_arr[i_node] = 0
+                node_info.radius = 0
 
                 #is a leaf
                 node_info.is_leaf = 1
@@ -549,7 +560,7 @@ cdef class BallTree:
                                   dist_p(centroid,
                                          data + n_features * idx_array[i],
                                          n_features, p))
-                node_radius_arr[i_node] = dist_from_dist_p(radius, p)
+                node_info.radius = dist_from_dist_p(radius, p)
 
                 if n_points <= self.leaf_size:
                     node_info.is_leaf = 1
@@ -580,7 +591,6 @@ cdef class BallTree:
         cdef DTYPE_t* data = <DTYPE_t*> self.data.data
         cdef ITYPE_t* idx_array = <ITYPE_t*> self.idx_array.data
         cdef DTYPE_t* node_centroid_arr = <DTYPE_t*> self.node_centroid_arr.data
-        cdef DTYPE_t* node_radius_arr = <DTYPE_t*> self.node_radius_arr.data
         cdef NodeInfo* node_info_arr = <NodeInfo*> self.node_info_arr.data
         cdef NodeInfo* node_info = node_info_arr
 
@@ -594,7 +604,7 @@ cdef class BallTree:
 
         item.i_node = 0
         item.dist_LB = calc_dist_LB(pt, node_centroid_arr,
-                                    node_radius_arr[0],
+                                    node_info.radius,
                                     n_features, p)
         stack_push(node_stack, item)
 
@@ -630,11 +640,11 @@ cdef class BallTree:
                 i2 = i1 + 1
                 dist_LB_1 = calc_dist_LB(pt, (node_centroid_arr
                                               + i1 * n_features),
-                                         node_radius_arr[i1],
+                                         node_info_arr[i1].radius,
                                          n_features, p)
                 dist_LB_2 = calc_dist_LB(pt, (node_centroid_arr
                                               + i2 * n_features),
-                                         node_radius_arr[i2],
+                                         node_info_arr[i2].radius,
                                          n_features, p)
 
 
