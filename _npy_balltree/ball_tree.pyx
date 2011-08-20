@@ -377,6 +377,12 @@ cdef class BallTree:
                                       dtype='c', order='C')
         self.build_tree_()
 
+        # Check that our estimate for the number of nodes is okay.
+        # This should never be a problem, but it's better to have
+        # this error than a Segmentation fault!
+        if not self.check_tree_():
+            raise ValueError, "Fatal: not enough BallTree space allocated"
+
     def query(self, X, n_neighbors, return_distance=True):
         X = np.asarray(X, dtype=DTYPE, order='C')
         assert X.shape[-1] == self.data.shape[1]
@@ -416,7 +422,17 @@ cdef class BallTree:
                     idx_array.reshape((orig_shape[:-1]) + (k,)))
         else:
             return idx_array.reshape((orig_shape[:-1]) + (k,))
-        
+
+    cdef ITYPE_t check_tree_(BallTree self):
+        cdef ITYPE_t n_nodes = self.node_radius_arr.shape[0]
+        cdef ITYPE_t i
+        cdef NodeInfo* node_info
+
+        for i from (n_nodes - 1) / 2 <= i < n_nodes:
+            node_info = <NodeInfo*>self.node_info_arr.data + i
+            if not node_info.is_leaf:
+                return 0
+        return 1
         
     @cython.cdivision(True)
     cdef void build_tree_(BallTree self):
@@ -429,11 +445,9 @@ cdef class BallTree:
         cdef ITYPE_t p = self.p
         cdef ITYPE_t n_samples = self.data.shape[0]
         cdef ITYPE_t n_features = self.data.shape[1]
-        cdef ITYPE_t n_nodes = self.node_info_arr.shape[0]
+        cdef ITYPE_t n_nodes = self.node_radius_arr.shape[0]
 
-        cdef ITYPE_t idx_start = 0
-        cdef ITYPE_t idx_end = n_samples
-        cdef ITYPE_t n_points = n_samples
+        cdef ITYPE_t idx_start, idx_end, n_points
         cdef DTYPE_t radius
         cdef ITYPE_t i, i_node, i_parent
 
@@ -442,13 +456,11 @@ cdef class BallTree:
         cdef NodeInfo* parent_info
         cdef DTYPE_t* point
 
-        if n_points == 0:
-            raise ValueError, "zero-sized node"
-
         #------------------------------------------------------------
-        # take care of the head node
-        node_info.idx_start = idx_start
-        node_info.idx_end = idx_end
+        # take care of the root node
+        node_info.idx_start = 0
+        node_info.idx_end = n_samples
+        n_points = n_samples
 
         # determine Node centroid
         compute_centroid(centroid, data, idx_array,
@@ -456,7 +468,7 @@ cdef class BallTree:
 
         # determine Node radius
         radius = 0
-        for i from idx_start <= i < idx_end:
+        for i from node_info.idx_start <= i < node_info.idx_end:
             radius = dmax(radius, 
                           dist_p(centroid, data + n_features * idx_array[i],
                                  n_features, p))
@@ -470,12 +482,12 @@ cdef class BallTree:
             node_info.is_leaf = 0
 
             # find dimension with largest spread
-            i_max = find_split_dim(data, idx_array + idx_start,
+            i_max = find_split_dim(data, idx_array + node_info.idx_start,
                                    n_features, n_points)
 
             # sort idx_array along this dimension
             partition_indices(data,
-                              idx_array + idx_start,
+                              idx_array + node_info.idx_start,
                               i_max,
                               n_points / 2,
                               n_features,
