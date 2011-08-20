@@ -357,9 +357,24 @@ cdef inline ITYPE_t estimate_num_nodes(ITYPE_t n_samples,
 ######################################################################
 cdef class BallTree:
     """
-    BallTree class
+    Ball Tree for fast nearest-neighbor searches :
 
-    implementation of BallTree using numpy arrays for picklability
+    BallTree(M, leaf_size=20)
+
+    Parameters
+    ----------
+    M : array-like, shape = [N,D]
+            N is the number of points in the data set, and
+            D is the dimension of the parameter space.
+            Note: if M is an aligned array of doubles (not
+            necessarily contiguous) then data will not be
+            copied. Otherwise, an internal copy will be made.
+
+    leaf_size : positive integer (default = 20)
+            Number of points at which to switch to brute-force.
+	    Changing leaf_size will not affect the returned neighbors,
+	    but can significantly impact the speed of a query.  See
+	    discussion in the NeighborsClassifier documentation.
     """
     cdef np.ndarray data
     cdef np.ndarray idx_array
@@ -400,6 +415,36 @@ cdef class BallTree:
             raise ValueError, "Fatal: not enough BallTree space allocated"
 
     def query(self, X, n_neighbors, return_distance=True):
+        """
+        query(x, k=1, return_distance=True)
+
+        query the Ball Tree for the k nearest neighbors
+
+        Parameters
+        ----------
+        x : array-like, last dimension self.dim
+              An array of points to query
+        k : integer  (default = 1)
+              The number of nearest neighbors to return
+        return_distance : boolean (default = True)
+              if True, return a tuple (d,i)
+              if False, return array i
+
+        Returns
+        -------
+        i    : if return_distance == False
+        (d,i) : if return_distance == True
+
+        d : array of doubles - shape: x.shape[:-1] + (k,)
+            each entry gives the list of distances to the
+            neighbors of the corresponding point
+            (note that distances are not sorted)
+
+        i : array of integers - shape: x.shape[:-1] + (k,)
+            each entry gives the list of indices of
+            neighbors of the corresponding point
+            (note that neighbors are not sorted)
+        """
         X = np.asarray(X, dtype=DTYPE, order='C')
         assert X.shape[-1] == self.data.shape[1]
         assert n_neighbors <= self.data.shape[0]
@@ -440,6 +485,50 @@ cdef class BallTree:
             return idx_array.reshape((orig_shape[:-1]) + (k,))
 
     def query_radius(self, X, r, return_distance=False, count_only=False):
+        """
+        query_radius(self, X, r, count_only = False):
+
+        query the Ball Tree for neighbors within a ball of size r
+
+        Parameters
+        ----------
+        x : array-like, last dimension self.dim
+            An array of points to query
+        r : distance within which neighbors are returned
+            r can be a single value, or an array of values of shape
+            x.shape[:-1] if different radii are desired for each point.
+        return_distance : boolean (default = False)
+            if True,  return distances to neighbors of each point
+            if False, return only neighbors
+            Note that unlike query() above, setting return_distance=True
+            adds to the computation time.  Not all distances must be
+            calculated for return_distance=False.
+        count_only : boolean (default = False)
+            if True,  return only the count of points within distance r
+            if False, return the indices of all points within distance r
+            If return_distance==True, setting count_only=True will
+            raise an error.
+
+        Returns
+        -------
+        n     : if count_only == True
+        i     : if count_only == False and return_distance == False
+        (i,d) : if count_only == False and return_distance == True
+
+        n : array of integers - shape: x.shape[:-1]
+            each entry gives the number of neighbors within
+            a distance r of the corresponding point.
+
+        i : array of objects  - shape: x.shape[:-1]
+            each element is a numpy integer array
+            listing the indices of neighbors
+            of the corresponding point
+            (note that neighbors are not sorted by distance)
+
+        d : array of objects  - shape: x.shape[:-1]
+            each element is a numpy double array
+            listing the distances corresponding to indices in i.
+        """
         if count_only and return_distance:
             raise ValueError("count_only and return_distance "
                              "cannot both be true")
