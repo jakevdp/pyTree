@@ -4,19 +4,14 @@
 # License: BSD
 
 """
+=========
 Ball Tree
 =========
-
-Description
------------
 A ball tree is a data object which speeds up nearest neighbor
 searches in high dimensions (see scikit-learn neighbors module
 documentation for an overview of neighbor trees). There are many
 types of ball trees.  This package provides a basic implementation
 in cython.
-
-Examples
---------
 
 Implementation Notes
 --------------------
@@ -94,6 +89,8 @@ pseudo-code to show the structure of the main functionality
         #class data:
         data
         root_node
+
+        #class methods
         def construct(data, num_leaves):
             root_node.construct(data)
 
@@ -132,14 +129,15 @@ expected number of nodes `n_nodes`, an allocates the following arrays:
     - `radius` : a floating-point value which gives the distance from
       the node centroid to the furthest point in the node.
 
-You may notice that there are no pointers from parent nodes to child nodes and
-vice-versa.  This is implemented implicitly:  For a node with index `i`, the
-two children are found at indices `2 * i + 1` and `2 * i + 2`, while the
-parent is found at index `floor((i - 1) / 2)`.  The root node has no parent.
+One feature here is that there are no stored pointers from parent nodes to
+child nodes and vice-versa.  These pointers are implemented implicitly:
+For a node with index `i`, the two children are found at indices `2 * i + 1`
+and `2 * i + 2`, while the parent is found at index `floor((i - 1) / 2)`.
+The root node has no parent.
 
-With this data structure in place, we can implement the functionality of the
-BallTree pseudo-code spelled-out above in a much more efficient manner.
-Most of the data passing done in this code uses raw data  pointers.
+With this data structure in place, the functionality of the above BallTree
+pseudo-code can be implemented in a much more efficient manner.
+Most of the data passing done in this code uses raw data pointers.
 Using numpy arrays would be preferable for safety, but the
 overhead of array slicing and sub-array construction leads to execution
 time which is several orders of magnitude slower than the current
@@ -147,10 +145,10 @@ implementation.
 """
 
 import numpy as np
-cimport numpy as np
 
+cimport numpy as np
 cimport cython
-cimport stdlib
+from libc cimport stdlib
 
 ######################################################################
 # global definitions
@@ -272,7 +270,7 @@ cdef DTYPE_t dist_p_from_dist(DTYPE_t r, DTYPE_t p):
 #  used to keep track of node information.
 #  there is also a centroid for each node: this is kept in a separate
 #  array for efficiency.  This is a hybrid of the "Array of Structures"
-#  and "Structure of Arrays" programming style.
+#  and "Structure of Arrays" styles.
 cdef struct NodeInfo:
     ITYPE_t idx_start
     ITYPE_t idx_end
@@ -284,8 +282,8 @@ cdef struct NodeInfo:
 # stack struct
 #  This is used to keep track of the recursion stack in Node_query
 cdef struct stack_item:
-    DTYPE_t dist_p_LB
     ITYPE_t i_node
+    DTYPE_t dist_p_LB
 
 
 cdef struct stack:
@@ -335,7 +333,7 @@ cdef inline stack_item stack_pop(stack* self):
 
 
 ######################################################################
-cdef class BallTree:
+cdef class BallTree(object):
     """
     Ball Tree for fast nearest-neighbor searches :
 
@@ -353,8 +351,9 @@ cdef class BallTree:
     leaf_size : positive integer (default = 20)
         Number of points at which to switch to brute-force.
         Changing leaf_size will not affect the returned neighbors,
-        but can significantly impact the speed of a query.  See
-        discussion in the NeighborsClassifier documentation.
+        but can significantly impact the speed of a query and the memory
+        required to store the built ball tree.  See discussion in the
+        NeighborsClassifier documentation.
 
     p : distance metric for the BallTree.  ``p`` encodes the Minkowski
         p-distance:
@@ -363,6 +362,37 @@ cdef class BallTree:
         inequality will hold.  If ``p == np.inf``, then the distance is
         equivalent to
             D = max(X[i] - X[j])
+
+    Examples
+    --------
+    Query for k-nearest neighbors
+
+        >>> import numpy as np
+        >>> np.random.seed(0)
+        >>> X = np.random.random((10,3))  # 10 points in 3 dimensions
+        >>> ball_tree = BallTree(X, leaf_size=2)
+        >>> dist, ind = ball_tree.query(X[0], n_neighbors=3)
+        >>> print ind  # indices of 3 closest neighbors
+        [0 3 1]
+        >>> print dist  # distances to 3 closest neighbors
+        [ 0.          0.19662693  0.29473397]
+
+    Pickle and Unpickle a ball tree (using protocol = 2).  Note that the
+    state of the tree is saved in the pickle operation: the tree is not
+    rebuilt on un-pickling
+
+        >>> import numpy as np
+        >>> import pickle
+        >>> np.random.seed(0)
+        >>> X = np.random.random((10,3))  # 10 points in 3 dimensions
+        >>> ball_tree = BallTree(X, leaf_size=2)
+        >>> s = pickle.dumps(ball_tree, protocol=2)
+        >>> ball_tree_copy = pickle.loads(s)
+        >>> dist, ind = ball_tree_copy.query(X[0], n_neighbors=3)
+        >>> print ind  # indices of 3 closest neighbors
+        [0 3 1]
+        >>> print dist  # distances to 3 closest neighbors
+        [ 0.          0.19662693  0.29473397]
     """
     cdef np.ndarray data
     cdef np.ndarray idx_array
@@ -374,12 +404,15 @@ cdef class BallTree:
 
     def __init__(self, X, ITYPE_t leaf_size=20, DTYPE_t p=2):
         self.data = np.asarray(X, dtype=DTYPE)
-        assert self.data.ndim == 2
+        if self.data.ndim != 2:
+            raise ValueError("X should have two dimensions")
 
-        assert p >= 1
+        if p < 1:
+            raise ValueError("p must be greater than or equal to 1")
         self.p = p
 
-        assert leaf_size >= 1
+        if leaf_size < 1:
+            raise ValueError("leaf_size must be greater than or equal to 1")
         self.leaf_size = leaf_size
 
         cdef ITYPE_t n_samples = self.data.shape[0]
@@ -401,6 +434,30 @@ cdef class BallTree:
         # this error than a Segmentation fault!
         if not self.enough_space_allocated_():
             raise ValueError("Fatal: not enough BallTree space allocated")
+
+    def __getstate__(self):
+        """
+        get state for pickling
+        """
+        return (self.data,
+                self.idx_array,
+                self.node_centroid_arr,
+                self.node_info_arr,
+                self.p,
+                self.leaf_size,
+                self.n_nodes)
+
+    def __setstate__(self, state):
+        """
+        set state for pickling
+        """
+        self.data = state[0]
+        self.idx_array = state[1]
+        self.node_centroid_arr = state[2]
+        self.node_info_arr = state[3]
+        self.p = state[4]
+        self.leaf_size = state[5]
+        self.n_nodes = state[6]
 
     ######################################################################
     # estimate_num_nodes
@@ -424,7 +481,7 @@ cdef class BallTree:
     @cython.cdivision(True)
     cdef ITYPE_t enough_space_allocated_(BallTree self):
         cdef ITYPE_t i
-        cdef NodeInfo* node_info = <NodeInfo*>self.node_info_arr.data + i
+        cdef NodeInfo* node_info = <NodeInfo*>self.node_info_arr.data
         # all nodes in the second half of the tree should be leaves.
         for i from (self.n_nodes - 1) / 2 <= i < self.n_nodes:
             if not node_info[i].is_leaf:
@@ -461,15 +518,35 @@ cdef class BallTree:
             each entry gives the list of indices of
             neighbors of the corresponding point
             (note that neighbors are not sorted)
+
+        Examples
+        --------
+        Query for k-nearest neighbors
+
+            >>> import numpy as np
+            >>> np.random.seed(0)
+            >>> X = np.random.random((10,3))  # 10 points in 3 dimensions
+            >>> ball_tree = BallTree(X, leaf_size=2)
+            >>> dist, ind = ball_tree.query(X[0], n_neighbors=3)
+            >>> print ind  # indices of 3 closest neighbors
+            [0 3 1]
+            >>> print dist  # distances to 3 closest neighbors
+            [ 0.          0.19662693  0.29473397]
         """
         X = np.asarray(X, dtype=DTYPE, order='C')
-        assert X.shape[-1] == self.data.shape[1]
-        assert n_neighbors <= self.data.shape[0]
+        X = np.atleast_1d(X)
 
-        # almost-flatten X for iteration
+        if X.shape[-1] != self.data.shape[1]:
+            raise ValueError("query data dimension must match BallTree "
+                             "data dimension")
+
+        if n_neighbors > self.data.shape[0]:
+            raise ValueError("n_neighbors must be less than or equal "
+                             "to the number of training points")
+
+        # flatten X for iteration
         orig_shape = X.shape
         X = X.reshape((-1, X.shape[-1]))
-        X = np.asarray(X, dtype=DTYPE, order='C')
 
         cdef ITYPE_t i, k = n_neighbors
         cdef np.ndarray distances = np.empty((X.shape[0], k), dtype=DTYPE)
@@ -544,25 +621,44 @@ cdef class BallTree:
         d : array of objects  - shape: x.shape[:-1]
             each element is a numpy double array
             listing the distances corresponding to indices in i.
+
+        Examples
+        --------
+        Query for neighbors in a given radius
+
+            >>> import numpy as np
+            >>> np.random.seed(0)
+            >>> X = np.random.random((10,3))  # 10 points in 3 dimensions
+            >>> ball_tree = BallTree(X, leaf_size=2)
+            >>> ind = ball_tree.query_radius(X[0], r=0.3)
+            >>> print ind  # indices of neighbors within distance 0.3
+            [3 0 1]
         """
         if count_only and return_distance:
             raise ValueError("count_only and return_distance "
                              "cannot both be true")
-        X = np.atleast_2d(X)
-        assert X.shape[-1] == self.data.shape[1]
 
         cdef np.ndarray idx_array, idx_array_i, distances, distances_i
         cdef np.ndarray pt, count
         cdef ITYPE_t count_i
 
-        # make the radius array
+        # prepare X for query
+        X = np.asarray(X, dtype=DTYPE, order='C')
+        X = np.atleast_1d(X)
+        if X.shape[-1] != self.data.shape[1]:
+            raise ValueError("query data dimension must match BallTree "
+                             "data dimension")
+
+        # prepare r for query
+        r = np.asarray(r, dtype=DTYPE, order='C')
         r = np.atleast_1d(r)
         if r.shape == (1,):
             r = r[0] * np.ones(X.shape[:-1], dtype=np.double)
         else:
-            assert r.shape == X.shape[:-1]
+            if r.shape != X.shape[:-1]:
+                raise ValueError("r must be broadcastable to X.shape")
 
-        # almost-flatten X for iteration
+        # flatten X and r for iteration
         orig_shape = X.shape
         X = X.reshape((-1, X.shape[-1]))
         r = r.reshape(-1)
@@ -579,7 +675,7 @@ cdef class BallTree:
                                                           &node_stack)
         elif not return_distance:
             idx_array = np.empty(X.shape[0], dtype='object')
-            idx_array_i = np.empty(X.shape[0], dtype=ITYPE)
+            idx_array_i = np.empty(self.data.shape[0], dtype=ITYPE)
             for pt_idx, pt in enumerate(X):
                 count_i = self.query_radius_idx_only_(
                     <DTYPE_t*>pt.data,
@@ -591,8 +687,8 @@ cdef class BallTree:
         else:
             idx_array = np.empty(X.shape[0], dtype='object')
             distances = np.empty(X.shape[0], dtype='object')
-            idx_array_i = np.empty(X.shape[0], dtype=ITYPE)
-            distances_i = np.empty(X.shape[0], dtype=DTYPE)
+            idx_array_i = np.empty(self.data.shape[0], dtype=ITYPE)
+            distances_i = np.empty(self.data.shape[0], dtype=DTYPE)
             for pt_idx, pt in enumerate(X):
                 count_i = self.query_radius_distances_(
                     <DTYPE_t*>pt.data,
@@ -1039,6 +1135,8 @@ cdef class BallTree:
         return idx_i
 
 
+######################################################################
+# Helper functions for building and querying
 @cython.profile(False)
 cdef inline void copy_array(DTYPE_t* x, DTYPE_t* y, ITYPE_t n):
     # copy array y into array x
@@ -1053,9 +1151,9 @@ cdef void compute_centroid(DTYPE_t* centroid,
                            ITYPE_t* node_indices,
                            ITYPE_t n_features,
                            ITYPE_t n_points):
-    # centroid points to an array of length n_features
-    # data points to an array of length n_samples * n_features
-    # node_indices = idx_array + idx_start
+    # `centroid` points to an array of length n_features
+    # `data` points to an array of length n_samples * n_features
+    # `node_indices` = idx_array + idx_start
     cdef DTYPE_t *this_pt
     cdef ITYPE_t i, j
 
@@ -1109,6 +1207,14 @@ cdef void partition_indices(DTYPE_t* data,
                             ITYPE_t split_index,
                             ITYPE_t n_features,
                             ITYPE_t n_points):
+    # partition_indices will modify the array node_indices between
+    # indices 0 and n_points.  Upon return,
+    #   data[node_indices[0:split_index], split_dim]
+    #     <= data[node_indices[split_index], split_dim]
+    # and
+    #   data[node_indices[split_index], split_dim]
+    #     <= data[node_indices[split_index:n_points], split_dim]
+    # will hold.  The algorithm amounts to a partial quicksort
     cdef ITYPE_t left, right, midindex, i
     cdef DTYPE_t d1, d2
     left = 0
@@ -1158,6 +1264,9 @@ cdef inline DTYPE_t calc_dist_p_LB(DTYPE_t* pt,
 ######################################################################
 # priority queue
 #  This is used to keep track of the neighbors as they are found.
+#  It keeps the list of neighbors sorted.  A max heap implementation
+#  is faster for a large number of neighbors (k > 50 or so) but the
+#  results are similar for smaller values of k.
 @cython.profile(False)
 cdef inline DTYPE_t pqueue_largest(DTYPE_t* queue, ITYPE_t queue_size):
     return queue[queue_size - 1]
