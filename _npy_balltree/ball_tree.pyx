@@ -1306,3 +1306,80 @@ cdef inline void pqueue_insert(DTYPE_t val, ITYPE_t i_val,
 
     queue[i_mid] = val
     idx_array[i_mid] = i_val
+
+
+#TODO: profile priority_queue vs max_heap and choose which implementation
+# to use based on the number of neighbors requested
+
+
+#----------------------------------------------------------------------
+# max_heap functions
+#
+# This is a basic implementation of a fixed-size binary max-heap.
+# It can be used in place of priority_queue to keep track of the
+# k-nearest neighbors in a query.  The implementation is faster than
+# priority_queue for a very large number of neighbors (k > 50 or so).
+# The implementation is slower than priority_queue for fewer neighbors.
+# The other disadvantage is that for max_heap, the indices/distances must
+# be sorted upon completion of the query.  In priority_queue, the indices
+# and distances are sorted without an extra call.
+#
+# The root node is at heap[0].  The two child nodes of node i are at
+# (2 * i + 1) and (2 * i + 2).
+# The parent node of node i is node floor((i-1)/2).  Node 0 has no parent.
+# A max heap has (heap[i] >= heap[2 * i + 1]) and (heap[i] >= heap[2 * i + 2])
+# for all valid indices.
+#
+# In this implementation, an empty heap should be full of infinities
+
+#@cython.profile(False)
+#cdef inline DTYPE_t max_heap_largest(DTYPE_t* heap):
+#    return heap[0]
+#
+#
+#cdef void max_heap_insert(DTYPE_t val, ITYPE_t i_val,
+#                          DTYPE_t* heap,
+#                          ITYPE_t* idx_array,
+#                          ITYPE_t heap_size):
+#    cdef ITYPE_t i, ic1, ic2, i_tmp
+#    cdef DTYPE_t d_tmp
+#
+#    # check if val should be in heap
+#    if val > heap[0]:
+#        return
+#
+#    # insert val at position zero
+#    heap[0] = val
+#    idx_array[0] = i_val
+#
+#    #descend the heap, swapping values until the max heap criterion is met
+#    i = 0
+#    while 1:
+#        ic1 = 2 * i + 1
+#        ic2 = ic1 + 1
+#
+#        if ic1 >= heap_size:
+#            break
+#        elif ic2 >= heap_size:
+#            if heap[ic1] > val:
+#                i_swap = ic1
+#            else:
+#                break
+#        elif heap[ic1] >= heap[ic2]:
+#            if val < heap[ic1]:
+#                i_swap = ic1
+#            else:
+#                break
+#        else:
+#            if val < heap[ic2]:
+#                i_swap = ic2
+#            else:
+#                break
+#
+#        heap[i] = heap[i_swap]
+#        idx_array[i] = idx_array[i_swap]
+#
+#        i = i_swap
+#
+#    heap[i] = val
+#    idx_array[i] = i_val
