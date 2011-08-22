@@ -26,7 +26,10 @@ def compute_neighbors(X, BT):
     t0 = time()
     ball_tree = BT(X, leaf_size)
     t1 = time()
-    dist, ind = ball_tree.query(X, k, return_distance = True)
+    if BT == npyBallTree:
+        dist, ind = ball_tree.query(X, k, return_distance = True, use_pqueue=0)
+    else:
+        dist, ind = ball_tree.query(X, k, return_distance = True)
     t2 = time()
     count = ball_tree.query_radius(X, 0.2, count_only = True)
     t3 = time()

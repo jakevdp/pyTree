@@ -3,6 +3,8 @@
 # Author: Jake Vanderplas <vanderplas@astro.washington.edu>
 # License: BSD
 
+# search FIXME and TODO for a few tasks that need to be done
+
 """
 =========
 Ball Tree
@@ -306,6 +308,7 @@ cdef inline void stack_destroy(stack* self):
 
 @cython.profile(False)
 cdef inline void stack_resize(stack* self, int new_size):
+    #print "resize", self.n, new_size
     if new_size < self.n:
         raise ValueError("new_size smaller than current")
 
@@ -488,7 +491,7 @@ cdef class BallTree(object):
                 return 0
         return 1
 
-    def query(self, X, n_neighbors, return_distance=True):
+    def query(self, X, n_neighbors, return_distance=True, use_pqueue=True):
         """
         query(x, k=1, return_distance=True)
 
@@ -548,7 +551,9 @@ cdef class BallTree(object):
         orig_shape = X.shape
         X = X.reshape((-1, X.shape[-1]))
 
-        cdef ITYPE_t i, k = n_neighbors
+        cdef ITYPE_t i
+        cdef ITYPE_t k = n_neighbors
+        cdef ITYPE_t use_pq = use_pqueue
         cdef np.ndarray distances = np.empty((X.shape[0], k), dtype=DTYPE)
         cdef np.ndarray idx_array = np.empty((X.shape[0], k), dtype=ITYPE)
         cdef np.ndarray Xi
@@ -558,13 +563,16 @@ cdef class BallTree(object):
         cdef DTYPE_t* dist_ptr = <DTYPE_t*> distances.data
         cdef ITYPE_t* idx_ptr = <ITYPE_t*> idx_array.data
 
-        #FIXME: use a better estimate of stack size
         cdef stack node_stack
-        stack_create(&node_stack, self.data.shape[0])
+        stack_create(&node_stack, np.log2(self.n_nodes) + 1)
 
-        for Xi in X:
+        for i, Xi in enumerate(X):
             self.query_one_(<DTYPE_t*>Xi.data, k,
-                            dist_ptr, idx_ptr, &node_stack)
+                            dist_ptr, idx_ptr, &node_stack, use_pq)
+
+            if not use_pq:
+                sort_dist_idx(dist_ptr, idx_ptr, k)
+            
             dist_ptr += k
             idx_ptr += k
 
@@ -663,9 +671,8 @@ cdef class BallTree(object):
         X = X.reshape((-1, X.shape[-1]))
         r = r.reshape(-1)
 
-        #FIXME: use a better estimate of stack size
         cdef stack node_stack
-        stack_create(&node_stack, self.data.shape[0])
+        stack_create(&node_stack, np.log2(self.n_nodes) + 1)
 
         if count_only:
             count = np.zeros(X.shape[0], ITYPE)
@@ -849,7 +856,8 @@ cdef class BallTree(object):
                          ITYPE_t k,
                          DTYPE_t* near_set_dist,
                          ITYPE_t* near_set_indx,
-                         stack* node_stack):
+                         stack* node_stack,
+                         ITYPE_t use_pqueue):
         cdef DTYPE_t* data = <DTYPE_t*> self.data.data
         cdef ITYPE_t* idx_array = <ITYPE_t*> self.idx_array.data
         cdef DTYPE_t* node_centroid_arr = <DTYPE_t*>self.node_centroid_arr.data
@@ -870,6 +878,8 @@ cdef class BallTree(object):
                                         n_features, p)
         stack_push(node_stack, item)
 
+        cdef DTYPE_t largest
+
         while(node_stack.n > 0):
             item = stack_pop(node_stack)
             i_node = item.i_node
@@ -879,7 +889,12 @@ cdef class BallTree(object):
 
             #------------------------------------------------------------
             # Case 1: query point is outside node radius
-            if dist_p_LB >= pqueue_largest(near_set_dist, k):
+            if use_pqueue:
+                largest = pqueue_largest(near_set_dist, k)
+            else:
+                largest = max_heap_largest(near_set_dist)
+
+            if dist_p_LB >= largest:
                 continue
 
             #------------------------------------------------------------
@@ -889,10 +904,15 @@ cdef class BallTree(object):
                     dist_pt = dist_p(pt,
                                      data + n_features * idx_array[i],
                                      n_features, p)
-
-                    if dist_pt < pqueue_largest(near_set_dist, k):
-                        pqueue_insert(dist_pt, idx_array[i],
-                                      near_set_dist, near_set_indx, k)
+                    
+                    if use_pqueue:
+                        if dist_pt < pqueue_largest(near_set_dist, k):
+                            pqueue_insert(dist_pt, idx_array[i],
+                                          near_set_dist, near_set_indx, k)
+                    else:
+                        if dist_pt < max_heap_largest(near_set_dist):
+                            max_heap_insert(dist_pt, idx_array[i],
+                                            near_set_dist, near_set_indx, k)
 
             #------------------------------------------------------------
             # Case 3: Node is not a leaf.  Recursively query subnodes
@@ -1195,8 +1215,15 @@ cdef ITYPE_t find_split_dim(DTYPE_t* data,
 
 
 @cython.profile(False)
-cdef inline void swap(ITYPE_t* arr, ITYPE_t i1, ITYPE_t i2):
+cdef inline void iswap(ITYPE_t* arr, ITYPE_t i1, ITYPE_t i2):
     cdef ITYPE_t tmp = arr[i1]
+    arr[i1] = arr[i2]
+    arr[i2] = tmp
+
+
+@cython.profile(False)
+cdef inline void dswap(DTYPE_t* arr, ITYPE_t i1, ITYPE_t i2):
+    cdef DTYPE_t tmp = arr[i1]
     arr[i1] = arr[i2]
     arr[i2] = tmp
 
@@ -1226,9 +1253,9 @@ cdef void partition_indices(DTYPE_t* data,
             d1 = data[node_indices[i] * n_features + split_dim]
             d2 = data[node_indices[right] * n_features + split_dim]
             if d1 < d2:
-                swap(node_indices, i, midindex)
+                iswap(node_indices, i, midindex)
                 midindex += 1
-        swap(node_indices, midindex, right)
+        iswap(node_indices, midindex, right)
         if midindex == split_index:
             break
         elif midindex < split_index:
@@ -1308,78 +1335,113 @@ cdef inline void pqueue_insert(DTYPE_t val, ITYPE_t i_val,
     idx_array[i_mid] = i_val
 
 
-#TODO: profile priority_queue vs max_heap and choose which implementation
-# to use based on the number of neighbors requested
+#TODO: profile priority_queue vs max_heap and have BallTree.query()
+# choose which implementation to use based on the number of neighbors
+
+######################################################################
+# max_heap
+#
+#  This is a basic implementation of a fixed-size binary max-heap.
+#  It can be used in place of priority_queue to keep track of the
+#  k-nearest neighbors in a query.  The implementation is faster than
+#  priority_queue for a very large number of neighbors (k > 50 or so).
+#  The implementation is slower than priority_queue for fewer neighbors.
+#  The other disadvantage is that for max_heap, the indices/distances must
+#  be sorted upon completion of the query.  In priority_queue, the indices
+#  and distances are sorted without an extra call.
+#
+#  The root node is at heap[0].  The two child nodes of node i are at
+#  (2 * i + 1) and (2 * i + 2).
+#  The parent node of node i is node floor((i-1)/2).  Node 0 has no parent.
+#  A max heap has (heap[i] >= heap[2 * i + 1]) and (heap[i] >= heap[2 * i + 2])
+#  for all valid indices.
+#
+#  In this implementation, an empty heap should be full of infinities
+#
+#  As part of this implementation, there is a quicksort provided with
+#  `sort_dist_idx()`
+
+@cython.profile(False)
+cdef inline DTYPE_t max_heap_largest(DTYPE_t* heap):
+    return heap[0]
 
 
-#----------------------------------------------------------------------
-# max_heap functions
-#
-# This is a basic implementation of a fixed-size binary max-heap.
-# It can be used in place of priority_queue to keep track of the
-# k-nearest neighbors in a query.  The implementation is faster than
-# priority_queue for a very large number of neighbors (k > 50 or so).
-# The implementation is slower than priority_queue for fewer neighbors.
-# The other disadvantage is that for max_heap, the indices/distances must
-# be sorted upon completion of the query.  In priority_queue, the indices
-# and distances are sorted without an extra call.
-#
-# The root node is at heap[0].  The two child nodes of node i are at
-# (2 * i + 1) and (2 * i + 2).
-# The parent node of node i is node floor((i-1)/2).  Node 0 has no parent.
-# A max heap has (heap[i] >= heap[2 * i + 1]) and (heap[i] >= heap[2 * i + 2])
-# for all valid indices.
-#
-# In this implementation, an empty heap should be full of infinities
+cdef void max_heap_insert(DTYPE_t val, ITYPE_t i_val,
+                          DTYPE_t* heap,
+                          ITYPE_t* idx_array,
+                          ITYPE_t heap_size):
+    cdef ITYPE_t i, ic1, ic2, i_tmp
+    cdef DTYPE_t d_tmp
 
-#@cython.profile(False)
-#cdef inline DTYPE_t max_heap_largest(DTYPE_t* heap):
-#    return heap[0]
-#
-#
-#cdef void max_heap_insert(DTYPE_t val, ITYPE_t i_val,
-#                          DTYPE_t* heap,
-#                          ITYPE_t* idx_array,
-#                          ITYPE_t heap_size):
-#    cdef ITYPE_t i, ic1, ic2, i_tmp
-#    cdef DTYPE_t d_tmp
-#
-#    # check if val should be in heap
-#    if val > heap[0]:
-#        return
-#
-#    # insert val at position zero
-#    heap[0] = val
-#    idx_array[0] = i_val
-#
-#    #descend the heap, swapping values until the max heap criterion is met
-#    i = 0
-#    while 1:
-#        ic1 = 2 * i + 1
-#        ic2 = ic1 + 1
-#
-#        if ic1 >= heap_size:
-#            break
-#        elif ic2 >= heap_size:
-#            if heap[ic1] > val:
-#                i_swap = ic1
-#            else:
-#                break
-#        elif heap[ic1] >= heap[ic2]:
-#            if val < heap[ic1]:
-#                i_swap = ic1
-#            else:
-#                break
-#        else:
-#            if val < heap[ic2]:
-#                i_swap = ic2
-#            else:
-#                break
-#
-#        heap[i] = heap[i_swap]
-#        idx_array[i] = idx_array[i_swap]
-#
-#        i = i_swap
-#
-#    heap[i] = val
-#    idx_array[i] = i_val
+    # check if val should be in heap
+    if val > heap[0]:
+       return
+
+    # insert val at position zero
+    heap[0] = val
+    idx_array[0] = i_val
+
+    #descend the heap, swapping values until the max heap criterion is met
+    i = 0
+    while 1:
+        ic1 = 2 * i + 1
+        ic2 = ic1 + 1
+
+        if ic1 >= heap_size:
+            break
+        elif ic2 >= heap_size:
+            if heap[ic1] > val:
+                i_swap = ic1
+            else:
+                break
+        elif heap[ic1] >= heap[ic2]:
+            if val < heap[ic1]:
+                i_swap = ic1
+            else:
+                break
+        else:
+            if val < heap[ic2]:
+                i_swap = ic2
+            else:
+                break
+
+        heap[i] = heap[i_swap]
+        idx_array[i] = idx_array[i_swap]
+
+        i = i_swap
+
+    heap[i] = val
+    idx_array[i] = i_val
+
+
+cdef ITYPE_t partition_dist_idx(DTYPE_t* dist, ITYPE_t* idx, ITYPE_t k):
+    cdef ITYPE_t pivot_idx = k / 2
+    cdef DTYPE_t pivot_val = dist[pivot_idx]
+    cdef ITYPE_t store_idx = 0
+    cdef ITYPE_t i
+
+    dswap(dist, pivot_idx, k - 1)
+    iswap(idx, pivot_idx, k - 1)
+
+    for i from 0 <= i < k - 1:
+        if dist[i] < pivot_val:
+            dswap(dist, i, store_idx)
+            iswap(idx, i, store_idx)
+            store_idx += 1
+    dswap(dist, store_idx, k - 1)
+    iswap(idx, store_idx, k - 1)
+    return store_idx
+
+
+cdef void sort_dist_idx(DTYPE_t* dist, ITYPE_t* idx, ITYPE_t k):
+    cdef ITYPE_t pivot_idx
+    if k > 1:
+        pivot_idx = partition_dist_idx(dist, idx, k)
+        
+        sort_dist_idx(dist, idx, pivot_idx)
+        
+        sort_dist_idx(dist + pivot_idx + 1,
+                      idx + pivot_idx + 1,
+                      k - pivot_idx - 1)
+
+    
