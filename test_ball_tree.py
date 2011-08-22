@@ -15,11 +15,6 @@ D = 5
 k = 10
 leaf_size = 20
 
-#N = 5
-#D = 2
-#k = 3
-#leaf_size = 1
-
 X = np.random.random((N,D))
                        
 def compute_neighbors(X, BT):
@@ -32,15 +27,26 @@ def compute_neighbors(X, BT):
     t3 = time()
     r_ind = ball_tree.query_radius(X, 0.2, count_only = False)
     t4 = time()
-    rd_ind, rd_dist = ball_tree.query_radius(X, 0.2, return_distance = True)
-    t5 = time()
+    if BT == npyBallTree:
+        t4 = time()
+        rd_ind, rd_dist = ball_tree.query_radius(X, 0.2,
+                                                 return_distance = True,
+                                                 sort_results = True)
+        t5 = time()
+    else:
+        t4 = time()
+        rd_ind, rd_dist = ball_tree.query_radius(X, 0.2,
+                                                 return_distance = True)
+        t5 = time()
 
+        for i in range(len(r_ind)):
+            i_sort = np.argsort(rd_dist[i])
+            rd_ind[i] = rd_ind[i][i_sort]
+            rd_dist[i] = rd_dist[i][i_sort]
+    
     for i in range(len(r_ind)):
         r_ind[i].sort()
-        
-        i_sort = np.argsort(rd_ind[i])
-        rd_ind[i] = rd_ind[i][i_sort]
-        rd_dist[i] = rd_dist[i][i_sort]
+
 
     print "  build:          %.1e sec" % (t1 - t0)
     print "  query:          %.1e sec" % (t2 - t1)
