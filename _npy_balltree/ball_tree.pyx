@@ -43,6 +43,8 @@ few disadvantages, however: once the tree is built, augmenting or pruning it
 is not as straightforward.  Also, the size of the tree must be known from the
 start, so there is not as much flexibility in building it.
 
+BallTree Pseudo-code
+~~~~~~~~~~~~~~~~~~~~
 Because understanding a ball tree is simpler with recursive code, here is some
 pseudo-code to show the structure of the main functionality
 
@@ -103,6 +105,8 @@ of the form of the algorithm.  The implementation below is much faster than
 anything mirroring the pseudo-code above, but for that reason is much more
 opaque to understanding.  Here's the basic idea.
 
+BallTree Storage
+~~~~~~~~~~~~~~~~
 The BallTree information is stored using a combination of
 "Array of Structures" and "Structure of Arrays" to maximize speed.
 Given input data of size `(n_samples, n_features)`, BallTree computes the
@@ -144,9 +148,9 @@ time which is several orders of magnitude slower than the current
 implementation.
 
 Priority Queue vs Max-heap
---------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 When querying for more than one neighbor, the code must maintain a list of
-the current k nearest points.  The BallTree code implements this in two ways.  
+the current k nearest points.  The BallTree code implements this in two ways.
 
 - A priority queue: this is just a sorted list.  When an item is added,
   it is inserted in the appropriate location.  The cost of the search plus
@@ -218,7 +222,13 @@ cdef inline DTYPE_t dabs(DTYPE_t x):
 
 ######################################################################
 # distance functions
-#
+#  These implement the Minkowski p-distance given by
+#    dist = sum((x - y) ** p) ** (1 / p)
+#  To compare distances, the raising to the (1 / p) is not necessary
+#  therefore, for speed, we also define a function dist_p() given by
+#    dist = sum((x - y) ** p)
+#  there are also functions dist_from_dist_p() and dist_p_from_dist()
+#  which convert between these forms.
 @cython.cdivision(True)
 cdef DTYPE_t dist(DTYPE_t *x1, DTYPE_t *x2, ITYPE_t n, DTYPE_t p):
     cdef ITYPE_t i
@@ -358,6 +368,8 @@ cdef inline stack_item stack_pop(stack* self):
 
 
 ######################################################################
+# BallTree class
+#
 cdef class BallTree(object):
     """
     Ball Tree for fast nearest-neighbor searches :
@@ -598,7 +610,7 @@ cdef class BallTree(object):
             # if max-heap is used, results must be sorted
             if use_max_heap:
                 sort_dist_idx(dist_ptr, idx_ptr, k)
-            
+
             dist_ptr += k
             idx_ptr += k
 
@@ -627,9 +639,9 @@ cdef class BallTree(object):
         return_distance : boolean (default = False)
             if True,  return distances to neighbors of each point
             if False, return only neighbors
-            Note that unlike query() above, setting return_distance=True
-            adds to the computation time.  Not all distances must be
-            calculated for return_distance=False.
+            Note that unlike BallTree.query(), setting return_distance=True
+            adds to the computation time.  Not all distances need to be
+            calculated explicitly for return_distance=False.
         count_only : boolean (default = False)
             if True,  return only the count of points within distance r
             if False, return the indices of all points within distance r
@@ -638,21 +650,21 @@ cdef class BallTree(object):
 
         Returns
         -------
-        n     : if count_only == True
-        i     : if count_only == False and return_distance == False
-        (i,d) : if count_only == False and return_distance == True
+        count       : if count_only == True
+        ind         : if count_only == False and return_distance == False
+        (ind, dist) : if count_only == False and return_distance == True
 
-        n : array of integers - shape: x.shape[:-1]
+        count : array of integers, shape = X.shape[:-1]
             each entry gives the number of neighbors within
             a distance r of the corresponding point.
 
-        i : array of objects  - shape: x.shape[:-1]
-            each element is a numpy integer array
-            listing the indices of neighbors
-            of the corresponding point
-            (note that neighbors are not sorted by distance)
+        ind : array of objects, shape = X.shape[:-1]
+            each element is a numpy integer array listing the indices of
+            neighbors of the corresponding point.  Note that unlike
+            the results of BallTree.query(), the returned neighbors
+            are not sorted by distance
 
-        d : array of objects  - shape: x.shape[:-1]
+        dist : array of objects, shape = X.shape[:-1]
             each element is a numpy double array
             listing the distances corresponding to indices in i.
 
@@ -664,6 +676,8 @@ cdef class BallTree(object):
             >>> np.random.seed(0)
             >>> X = np.random.random((10,3))  # 10 points in 3 dimensions
             >>> ball_tree = BallTree(X, leaf_size=2)
+            >>> print ball_tree.query_radius(X[0], r=0.3, count_only=True)
+            3
             >>> ind = ball_tree.query_radius(X[0], r=0.3)
             >>> print ind  # indices of neighbors within distance 0.3
             [3 0 1]
@@ -904,7 +918,16 @@ cdef class BallTree(object):
                                         n_features, p)
         stack_push(node_stack, item)
 
-        cdef DTYPE_t largest
+        cdef DTYPE_t (*heapqueue_largest)(DTYPE_t*, ITYPE_t)
+        cdef void (*heapqueue_insert)(DTYPE_t, ITYPE_t, DTYPE_t*,
+                                      ITYPE_t*, ITYPE_t)
+
+        if use_max_heap:
+            heapqueue_largest = &max_heap_largest
+            heapqueue_insert = &max_heap_insert
+        else:
+            heapqueue_largest = &pqueue_largest
+            heapqueue_insert = &pqueue_insert
 
         while(node_stack.n > 0):
             item = stack_pop(node_stack)
@@ -915,12 +938,7 @@ cdef class BallTree(object):
 
             #------------------------------------------------------------
             # Case 1: query point is outside node radius
-            if use_max_heap:
-                largest = max_heap_largest(near_set_dist)
-            else:
-                largest = pqueue_largest(near_set_dist, k)
-
-            if dist_p_LB >= largest:
+            if dist_p_LB >= heapqueue_largest(near_set_dist, k):
                 continue
 
             #------------------------------------------------------------
@@ -930,15 +948,10 @@ cdef class BallTree(object):
                     dist_pt = dist_p(pt,
                                      data + n_features * idx_array[i],
                                      n_features, p)
-                    
-                    if use_max_heap:
-                        if dist_pt < max_heap_largest(near_set_dist):
-                            max_heap_insert(dist_pt, idx_array[i],
-                                            near_set_dist, near_set_indx, k)
-                    else:
-                        if dist_pt < pqueue_largest(near_set_dist, k):
-                            pqueue_insert(dist_pt, idx_array[i],
-                                          near_set_dist, near_set_indx, k)
+
+                    if dist_pt < heapqueue_largest(near_set_dist, k):
+                        heapqueue_insert(dist_pt, idx_array[i],
+                                         near_set_dist, near_set_indx, k)
 
             #------------------------------------------------------------
             # Case 3: Node is not a leaf.  Recursively query subnodes
@@ -1183,6 +1196,7 @@ cdef class BallTree(object):
 
 ######################################################################
 # Helper functions for building and querying
+#
 @cython.profile(False)
 cdef inline void copy_array(DTYPE_t* x, DTYPE_t* y, ITYPE_t n):
     # copy array y into array x
@@ -1317,12 +1331,13 @@ cdef inline DTYPE_t calc_dist_p_LB(DTYPE_t* pt,
 ######################################################################
 # priority queue
 #  This is used to keep track of the neighbors as they are found.
-#  It keeps the list of neighbors sorted.  A max heap implementation
-#  is faster for a large number of neighbors (k > 50 or so) but the
-#  results are similar for smaller values of k.
+#  It keeps the list of neighbors sorted, and inserts each new item
+#  into the list.  In this fixed-size implementation, empty elements
+#  are represented by infinities.
 @cython.profile(False)
 cdef inline DTYPE_t pqueue_largest(DTYPE_t* queue, ITYPE_t queue_size):
     return queue[queue_size - 1]
+
 
 cdef inline void pqueue_insert(DTYPE_t val, ITYPE_t i_val,
                                DTYPE_t* queue, ITYPE_t* idx_array,
@@ -1383,9 +1398,8 @@ cdef inline void pqueue_insert(DTYPE_t val, ITYPE_t i_val,
 #
 #  As part of this implementation, there is a quicksort provided with
 #  `sort_dist_idx()`
-
 @cython.profile(False)
-cdef inline DTYPE_t max_heap_largest(DTYPE_t* heap):
+cdef inline DTYPE_t max_heap_largest(DTYPE_t* heap, ITYPE_t k):
     return heap[0]
 
 
@@ -1398,7 +1412,7 @@ cdef void max_heap_insert(DTYPE_t val, ITYPE_t i_val,
 
     # check if val should be in heap
     if val > heap[0]:
-       return
+        return
 
     # insert val at position zero
     heap[0] = val
@@ -1460,11 +1474,9 @@ cdef void sort_dist_idx(DTYPE_t* dist, ITYPE_t* idx, ITYPE_t k):
     cdef ITYPE_t pivot_idx
     if k > 1:
         pivot_idx = partition_dist_idx(dist, idx, k)
-        
+
         sort_dist_idx(dist, idx, pivot_idx)
-        
+
         sort_dist_idx(dist + pivot_idx + 1,
                       idx + pivot_idx + 1,
                       k - pivot_idx - 1)
-
-    
