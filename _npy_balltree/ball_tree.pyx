@@ -3,8 +3,6 @@
 # Author: Jake Vanderplas <vanderplas@astro.washington.edu>
 # License: BSD
 
-# search FIXME and TODO for a few tasks that need to be done
-
 """
 =========
 Ball Tree
@@ -144,6 +142,30 @@ Using numpy arrays would be preferable for safety, but the
 overhead of array slicing and sub-array construction leads to execution
 time which is several orders of magnitude slower than the current
 implementation.
+
+Priority Queue vs Max-heap
+--------------------------
+When querying for more than one neighbor, the code must maintain a list of
+the current k nearest points.  The BallTree code implements this in two ways.  
+
+- A priority queue: this is just a sorted list.  When an item is added,
+  it is inserted in the appropriate location.  The cost of the search plus
+  insert averages O[k].
+- A max-heap: this is a binary tree structure arranged such that each node is
+  greater than its children.  The cost of adding an item is O[log(k)].
+  At the end of the iterations, the results must be sorted: a quicksort is
+  used, which averages O[k log(k)].  Quicksort has worst-case O[k^2]
+  performance, but because the input is already structured in a max-heap,
+  the worst case will not be realized.  Thus the sort is a one-time operation
+  with cost O[k log(k)].
+
+Each insert is performed an average of log(N) times per query, where N is
+the number of training points.  Because of this, for a single query, the
+priority-queue approach costs O[k log(N)], and the max-heap approach costs
+O[log(k)log(N)] + O[k log(k)].  Tests show that for sufficiently large k,
+the max-heap approach out-performs the priority queue approach by a factor
+of a few.  In light of these tests, the code uses a priority queue for
+k < 5, and a max-heap otherwise.
 """
 
 import numpy as np
@@ -491,7 +513,7 @@ cdef class BallTree(object):
                 return 0
         return 1
 
-    def query(self, X, n_neighbors, return_distance=True, use_pqueue=True):
+    def query(self, X, n_neighbors, return_distance=True):
         """
         query(x, k=1, return_distance=True)
 
@@ -551,9 +573,12 @@ cdef class BallTree(object):
         orig_shape = X.shape
         X = X.reshape((-1, X.shape[-1]))
 
+        # for n_neighbors less than 5, a priority queue is slightly faster
+        # for more neighbors, a max-heap implementation is better
+        cdef ITYPE_t use_max_heap = n_neighbors >= 5
+
         cdef ITYPE_t i
         cdef ITYPE_t k = n_neighbors
-        cdef ITYPE_t use_pq = use_pqueue
         cdef np.ndarray distances = np.empty((X.shape[0], k), dtype=DTYPE)
         cdef np.ndarray idx_array = np.empty((X.shape[0], k), dtype=ITYPE)
         cdef np.ndarray Xi
@@ -568,9 +593,10 @@ cdef class BallTree(object):
 
         for i, Xi in enumerate(X):
             self.query_one_(<DTYPE_t*>Xi.data, k,
-                            dist_ptr, idx_ptr, &node_stack, use_pq)
+                            dist_ptr, idx_ptr, &node_stack, use_max_heap)
 
-            if not use_pq:
+            # if max-heap is used, results must be sorted
+            if use_max_heap:
                 sort_dist_idx(dist_ptr, idx_ptr, k)
             
             dist_ptr += k
@@ -857,7 +883,7 @@ cdef class BallTree(object):
                          DTYPE_t* near_set_dist,
                          ITYPE_t* near_set_indx,
                          stack* node_stack,
-                         ITYPE_t use_pqueue):
+                         ITYPE_t use_max_heap):
         cdef DTYPE_t* data = <DTYPE_t*> self.data.data
         cdef ITYPE_t* idx_array = <ITYPE_t*> self.idx_array.data
         cdef DTYPE_t* node_centroid_arr = <DTYPE_t*>self.node_centroid_arr.data
@@ -889,10 +915,10 @@ cdef class BallTree(object):
 
             #------------------------------------------------------------
             # Case 1: query point is outside node radius
-            if use_pqueue:
-                largest = pqueue_largest(near_set_dist, k)
-            else:
+            if use_max_heap:
                 largest = max_heap_largest(near_set_dist)
+            else:
+                largest = pqueue_largest(near_set_dist, k)
 
             if dist_p_LB >= largest:
                 continue
@@ -905,14 +931,14 @@ cdef class BallTree(object):
                                      data + n_features * idx_array[i],
                                      n_features, p)
                     
-                    if use_pqueue:
-                        if dist_pt < pqueue_largest(near_set_dist, k):
-                            pqueue_insert(dist_pt, idx_array[i],
-                                          near_set_dist, near_set_indx, k)
-                    else:
+                    if use_max_heap:
                         if dist_pt < max_heap_largest(near_set_dist):
                             max_heap_insert(dist_pt, idx_array[i],
                                             near_set_dist, near_set_indx, k)
+                    else:
+                        if dist_pt < pqueue_largest(near_set_dist, k):
+                            pqueue_insert(dist_pt, idx_array[i],
+                                          near_set_dist, near_set_indx, k)
 
             #------------------------------------------------------------
             # Case 3: Node is not a leaf.  Recursively query subnodes
@@ -1334,9 +1360,6 @@ cdef inline void pqueue_insert(DTYPE_t val, ITYPE_t i_val,
     queue[i_mid] = val
     idx_array[i_mid] = i_val
 
-
-#TODO: profile priority_queue vs max_heap and have BallTree.query()
-# choose which implementation to use based on the number of neighbors
 
 ######################################################################
 # max_heap

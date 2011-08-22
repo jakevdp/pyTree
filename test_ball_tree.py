@@ -26,10 +26,7 @@ def compute_neighbors(X, BT):
     t0 = time()
     ball_tree = BT(X, leaf_size)
     t1 = time()
-    if BT == npyBallTree:
-        dist, ind = ball_tree.query(X, k, return_distance = True, use_pqueue=0)
-    else:
-        dist, ind = ball_tree.query(X, k, return_distance = True)
+    dist, ind = ball_tree.query(X, k, return_distance = True)
     t2 = time()
     count = ball_tree.query_radius(X, 0.2, count_only = True)
     t3 = time()
@@ -37,11 +34,6 @@ def compute_neighbors(X, BT):
     t4 = time()
     rd_ind, rd_dist = ball_tree.query_radius(X, 0.2, return_distance = True)
     t5 = time()
-
-    i_sort = np.argsort(dist, 1)
-    for i in range(dist.shape[0]):
-        dist[i] = dist[i, i_sort[i]]
-        ind[i] = ind[i, i_sort[i]]
 
     for i in range(len(r_ind)):
         r_ind[i].sort()
